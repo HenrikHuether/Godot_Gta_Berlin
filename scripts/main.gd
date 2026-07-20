@@ -1,5 +1,7 @@
 extends Spatial
 
+const BERLIN_MAP_SCENE = preload("res://scenes/BerlinMap.tscn")
+const HUMAN_SCENE = preload("res://Assets/HumanV2.glb")
 const WALK_SPEED = 8.0
 const DRIVE_SPEED = 22.0
 const GRAVITY = 24.0
@@ -103,85 +105,21 @@ func add_cylinder(parent: Node, name: String, pos: Vector3, radius: float, heigh
 	parent.add_child(mesh_instance)
 	return mesh_instance
 
-func terrain_height(x: float, z: float) -> float:
-	return 2.8 * sin(x * 0.035) * cos(z * 0.030) + 1.25 * sin((x + z) * 0.060)
-
-func build_terrain():
-	var surface = SurfaceTool.new()
-	surface.begin(Mesh.PRIMITIVE_TRIANGLES)
-	var step = 5.0
-	var extent = 110.0
-	for x in range(-22, 22):
-		for z in range(-22, 22):
-			var x0 = x * step
-			var z0 = z * step
-			var x1 = x0 + step
-			var z1 = z0 + step
-			var a = Vector3(x0, terrain_height(x0, z0), z0)
-			var b = Vector3(x1, terrain_height(x1, z0), z0)
-			var c = Vector3(x1, terrain_height(x1, z1), z1)
-			var d = Vector3(x0, terrain_height(x0, z1), z1)
-			for vertex in [a, c, b, a, d, c]:
-				surface.add_uv(Vector2((vertex.x + extent) / 18.0, (vertex.z + extent) / 18.0))
-				surface.add_vertex(vertex)
-	surface.generate_normals()
-	var terrain_mesh = surface.commit()
-	var terrain = MeshInstance.new()
-	terrain.name = "HillyTerrain"
-	terrain.mesh = terrain_mesh
-	var grass = material(Color("4f8745"))
-	grass.uv1_scale = Vector3(8, 8, 8)
-	terrain.material_override = grass
-	add_child(terrain)
-	var terrain_body = StaticBody.new()
-	terrain_body.name = "TerrainCollision"
-	var collision = CollisionShape.new()
-	collision.shape = terrain_mesh.create_trimesh_shape()
-	terrain_body.add_child(collision)
-	add_child(terrain_body)
-
-func add_road_segment(along_x: bool, offset: float, position: float):
-	var length = 10.0
-	var x = position if along_x else offset
-	var z = offset if along_x else position
-	var start_h = terrain_height(x - length * 0.5 if along_x else x, z if along_x else z - length * 0.5)
-	var end_h = terrain_height(x + length * 0.5 if along_x else x, z if along_x else z + length * 0.5)
-	var road = add_box(self, "Road", Vector3(x, (start_h + end_h) * 0.5 + 0.08, z), Vector3(length if along_x else 9.0, 0.14, 9.0 if along_x else length), Color("30343a"), false)
-	var angle = rad2deg(atan2(end_h - start_h, length))
-	if along_x:
-		road.rotation_degrees.z = angle
-	else:
-		road.rotation_degrees.x = -angle
-	var mark = add_box(self, "RoadMark", Vector3(x, (start_h + end_h) * 0.5 + 0.17, z), Vector3(4.5 if along_x else 0.22, 0.025, 0.22 if along_x else 4.5), Color("f4e36b"), false)
-	mark.rotation_degrees = road.rotation_degrees
-
 func build_world():
 	var sun = DirectionalLight.new()
 	sun.rotation_degrees = Vector3(-55, -25, 0)
 	sun.shadow_enabled = true
 	add_child(sun)
-	build_terrain()
-	# Two long crossing roads and two outer streets follow the rolling terrain.
-	for position in range(-100, 101, 10):
-		add_road_segment(true, 0, position)
-		add_road_segment(false, 0, position)
-		add_road_segment(true, 52, position)
-		add_road_segment(false, -52, position)
-	var colors = [Color("b75d4c"), Color("d4a24c"), Color("6689aa"), Color("ded7c5")]
-	var index = 0
-	for x in [-82, -66, -36, -20, 20, 36, 66, 82]:
-		for z in [-82, -66, -36, -20, 20, 36, 66, 82]:
-			if abs(x + 52) < 8 or abs(z - 52) < 8:
-				continue
-			var building_h = 7.0 + (index % 5) * 2.5
-			var ground_h = terrain_height(x, z)
-			add_box(self, "Building", Vector3(x, ground_h + building_h * 0.5, z), Vector3(11, building_h, 11), colors[index % colors.size()])
-			index += 1
+	var berlin_map = get_node_or_null("BerlinMap")
+	if not berlin_map:
+		berlin_map = BERLIN_MAP_SCENE.instance()
+		berlin_map.name = "BerlinMap"
+		add_child(berlin_map)
 
 func build_player():
 	player = KinematicBody.new()
 	player.name = "Player"
-	player.translation = Vector3(3, terrain_height(3, 8) + 1.1, 8)
+	player.translation = Vector3(3, 8, 8)
 	var collider = CollisionShape.new()
 	var capsule = CapsuleShape.new()
 	capsule.radius = 0.45
@@ -190,6 +128,7 @@ func build_player():
 	player.add_child(collider)
 	camera = Camera.new()
 	camera.translation = Vector3(0, 0.65, 0)
+	camera.far = 10000.0
 	camera.current = true
 	player.add_child(camera)
 	build_pistol()
@@ -216,7 +155,7 @@ func build_pistol():
 func build_car():
 	car = KinematicBody.new()
 	car.name = "Car"
-	car.translation = Vector3(2.8, terrain_height(2.8, -4) + 0.75, -4)
+	car.translation = Vector3(2.8, 8, -4)
 	var paint = textured_car_paint()
 	car_body = add_box(car, "Body", Vector3(0, 0, 0.05), Vector3(2.1, 0.65, 3.75), Color("c3282f"), false)
 	car_body.mesh.material = paint
@@ -245,37 +184,51 @@ func build_car():
 	collider.shape = shape
 	car.add_child(collider)
 	add_child(car)
+	call_deferred("place_car_on_ground")
+
+func place_car_on_ground():
+	var origin = car.global_transform.origin
+	var excluded = [car]
+	if player:
+		excluded.append(player)
+	var hit = get_world().direct_space_state.intersect_ray(
+		Vector3(origin.x, 50.0, origin.z),
+		Vector3(origin.x, -10.0, origin.z),
+		excluded
+	)
+	if hit:
+		car.translation.y = hit.position.y + 0.72
 
 func build_npcs():
-	var positions = [Vector3(-5, terrain_height(-5, -8) + 1.1, -8), Vector3(8, terrain_height(8, 5) + 1.1, 5), Vector3(-8, terrain_height(-8, 12) + 1.1, 12)]
+	var positions = [Vector3(-5, 8, -8), Vector3(8, 8, 5), Vector3(-8, 8, 12)]
 	for i in range(positions.size()):
 		var npc = StaticBody.new()
 		npc.name = "NPC_%d" % (i + 1)
 		npc.translation = positions[i]
 		npc.set_meta("health", 2)
-		var shirt_colors = [Color("3976a8"), Color("c44d43"), Color("4b9362")]
-		var skin_colors = [Color("e5ad7b"), Color("9b6848"), Color("d59a70")]
-		var shirt = shirt_colors[i]
-		var skin = skin_colors[i]
-		# Head, hair, torso and articulated-looking limbs give each target a human silhouette.
-		add_box(npc, "Torso", Vector3(0, 0.30, 0), Vector3(0.72, 0.88, 0.38), shirt, false)
-		add_sphere(npc, "Head", Vector3(0, 1.12, 0), 0.31, skin)
-		var hair = add_sphere(npc, "Hair", Vector3(0, 1.27, 0.015), 0.305, Color("35251e"))
-		hair.scale = Vector3(1.02, 0.48, 1.02)
-		for side in [-1, 1]:
-			add_cylinder(npc, "Arm", Vector3(side * 0.48, 0.27, 0), 0.105, 0.86, shirt, Vector3(0, 0, side * 8))
-			add_sphere(npc, "Hand", Vector3(side * 0.54, -0.17, 0), 0.12, skin)
-			add_cylinder(npc, "Leg", Vector3(side * 0.19, -0.61, 0), 0.14, 0.92, Color("252d3c"))
-			add_box(npc, "Shoe", Vector3(side * 0.19, -1.08, -0.08), Vector3(0.30, 0.16, 0.48), Color("191919"), false)
+		var human = HUMAN_SCENE.instance()
+		human.name = "HumanV2"
+		npc.add_child(human)
 		var collider = CollisionShape.new()
 		var shape = CapsuleShape.new()
-		shape.radius = 0.38
-		shape.height = 1.60
+		shape.radius = 0.42
+		shape.height = 1.20
 		collider.shape = shape
-		collider.translation.y = 0.12
+		collider.translation.y = 1.0
 		npc.add_child(collider)
 		add_child(npc)
 		npcs.append(npc)
+	call_deferred("place_npcs_on_map")
+
+func place_npcs_on_map():
+	var excluded = [player, car]
+	for npc in npcs:
+		excluded.append(npc)
+	for npc in npcs:
+		var origin = npc.global_transform.origin
+		var hit = get_world().direct_space_state.intersect_ray(Vector3(origin.x, 50, origin.z), Vector3(origin.x, -10, origin.z), excluded)
+		if hit:
+			npc.translation.y = hit.position.y
 
 func build_ui():
 	var layer = CanvasLayer.new()

@@ -1,10 +1,11 @@
 # GTA Berlin – Minimum Prototype
 
-Ein kleiner, vollständig aus primitiven 3D-Formen erzeugter Godot-Prototyp gemäß `Concept.md`.
-Das Auto besitzt eine prozedurale Lacktextur und eine mehrteilige Karosserie; NPCs haben eine
-menschliche Silhouette, und beim Ausrüsten erscheint ein First-Person-Pistolenmodell.
-Die rund 220 × 220 Meter große Stadt liegt auf prozeduralem Hügelland. Straßen folgen dem
-Höhenprofil, die Fahrphysik berücksichtigt Beschleunigung, Reibung, Steigung und Bodenneigung.
+Ein Godot-Prototyp gemäß `Concept.md`. Die editierbare Karte `scenes/BerlinMap.tscn`
+bildet Berliner Stadtblöcke mit texturierten Gründerzeitfassaden, Straßen, Innenhöfen,
+Stadtmobiliar und Landmarken ab. Die NPCs verwenden das riggte Modell `Assets/HumanV2.glb`.
+Das Auto besitzt eine prozedurale Lacktextur und eine mehrteilige Karosserie; beim Ausrüsten
+erscheint ein First-Person-Pistolenmodell. Die Fahrphysik berücksichtigt Beschleunigung,
+Reibung, Steigung und Bodenneigung.
 Schüsse zeigen kurz Mündungsfeuer, Leuchtspur und Einschlag.
 
 ## Start
@@ -25,7 +26,8 @@ Alternativ `project.godot` im Godot-Editor öffnen und **F6/F5** drücken.
 - **Linksklick** – schießen (NPCs brauchen zwei Treffer)
 - **Esc** – Maus freigeben
 
-Installiert wurde **Godot 3.6.2** systemweit aus den offiziellen Ubuntu-Paketquellen. Eine lokale
-Kopie unter `.tools/godot/` dient als projektspezifischer Fallback; ihre Binärdateien und
-Bibliotheken sind über `.gitignore` vom Repository ausgeschlossen.
+Benötigt wird **Godot 3.6.x**. `run.sh` verwendet zuerst die optionale lokale Kopie unter
+`.tools/godot/` und fällt anschließend auf ein systemweit installiertes `godot3` zurück.
+Nicht direkt benötigte `.blend`-Quelldateien liegen im von Godot ignorierten Ordner
+`SourceAssets/`. Die verwendeten Szenen und Texturen werden direkt vom Spiel geladen.
 # Godot_Gta_Berlin
