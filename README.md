@@ -28,3 +28,4 @@ Alternativ `project.godot` im Godot-Editor öffnen und **F6/F5** drücken.
 Installiert wurde **Godot 3.6.2** systemweit aus den offiziellen Ubuntu-Paketquellen. Eine lokale
 Kopie unter `.tools/godot/` dient als projektspezifischer Fallback; ihre Binärdateien und
 Bibliotheken sind über `.gitignore` vom Repository ausgeschlossen.
+# Godot_Gta_Berlin
