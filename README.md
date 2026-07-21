@@ -8,6 +8,11 @@ erscheint ein First-Person-Pistolenmodell. Die Fahrphysik berücksichtigt Beschl
 Reibung, Steigung und Bodenneigung.
 Schüsse zeigen kurz Mündungsfeuer, Leuchtspur und Einschlag.
 
+Mission 1 ist als vollständiger Vertical Slice spielbar: Mit einem Aktenkoffer fährt der
+Spieler ins Regierungsviertel, verschafft sich Zugang zum Bundestag und übergibt die
+Sendung am Empfang. Das dafür erzeugte Bundestag-Areal besitzt ein begehbares Inneres,
+einen bewachten Haupteingang und einen versteckten Servicegang.
+
 ## Start
 
 ```bash
@@ -25,7 +30,44 @@ Alternativ `project.godot` im Godot-Editor öffnen und **F6/F5** drücken.
 - **1** – Pistole aus-/einrüsten
 - **2** – Bazooka aus-/einrüsten
 - **Linksklick** – schießen (NPCs brauchen zwei Treffer)
+- **Enter** – freie Eingabe im Wachmann-Dialog absenden
+- **R** – Mission nach Abschluss oder Fahrzeugausfall neu starten
 - **Esc** – Maus freigeben
+
+## Mission 1: Sonderzustellung
+
+1. Mit dem Aktenkoffer in das rote Auto steigen.
+2. Dem gelben Wegpunkt bis zum Bundestag im Regierungsviertel folgen.
+3. Einen von zwei Zugängen wählen:
+   - Den Wachmann über eine freie Texteingabe überzeugen. Die lokale Dialogauswertung
+     reagiert auf Auftrag, Nachweise, Kooperation, Dringlichkeit und den Gesprächston;
+     es gibt keine vorgegebenen Antwortoptionen oder einzelne Pflichtformulierung.
+   - Die markierte Kiste mit **WASD** aus ihren Schleifspuren schieben und dadurch den
+     verborgenen Servicegang freilegen.
+4. Im Inneren am Empfang mit **E** den Aktenkoffer übergeben.
+
+Der Dialog funktioniert vollständig offline. Seine Auswertung ist in
+`scripts/persuasion_evaluator.gd` gekapselt und kann später durch einen LLM-Dienst
+ersetzt werden, ohne den Missionsablauf umzubauen.
+
+## Tests
+
+```bash
+godot3 --no-window --audio-driver Dummy --path . --script tests/test_persuasion_evaluator.gd
+godot3 --no-window --audio-driver Dummy --path . --script tests/test_mission_one.gd
+```
+
+Der erste Test prüft mehrere friedliche Überzeugungswege, Drohungen, Verneinungen und
+erneute Versuche. Der zweite prüft beide Missionsrouten, die Übergabe sowie Benzin,
+Fahrzeugschaden und Fahndungsanstieg.
+
+## Fahrzeug und Fahndung
+
+- Das Missionsauto verbraucht beim Fahren Benzin.
+- Harte seitliche Kollisionen beschädigen das Fahrzeug; bei 0 % bleibt es liegen.
+- Bei einem Fahrzeugausfall kann die Mission mit **R** neu begonnen werden.
+- Straftaten erhöhen die sichtbare Fahndungsstufe. Gebäudeschäden lösen neben dem
+  Feuerwehreinsatz auch einen Polizeieinsatz aus.
 
 ## Einsatzsysteme
 

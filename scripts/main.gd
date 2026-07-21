@@ -2,6 +2,7 @@ extends Spatial
 
 const BERLIN_MAP_SCENE = preload("res://scenes/BerlinMap.tscn")
 const HUMAN_SCENE = preload("res://Assets/HumanV2.glb")
+const MISSION_ONE_SCRIPT = preload("res://scripts/mission_one.gd")
 const WALK_SPEED = 8.0
 const DRIVE_SPEED = 22.0
 const GRAVITY = 24.0
@@ -31,6 +32,11 @@ var emergency_vehicles = []
 var police_officers = []
 var destroyed_buildings = []
 var police_dispatch_count = 0
+var mission_one
+var car_fuel = 38.0
+var car_health = 100
+var car_damage_cooldown = 0.0
+var wanted_level = 0
 
 func _ready():
 	Input.set_mouse_mode(Input.MOUSE_MODE_CAPTURED)
@@ -40,6 +46,11 @@ func _ready():
 	build_npcs()
 	build_ui()
 	tag_destructible_buildings(get_node("BerlinMap"))
+	mission_one = MISSION_ONE_SCRIPT.new()
+	mission_one.name = "MissionOne"
+	add_child(mission_one)
+	mission_one.setup(self)
+	update_status()
 
 func material(color: Color) -> SpatialMaterial:
 	var mat = SpatialMaterial.new()
@@ -299,6 +310,12 @@ func build_ui():
 	layer.add_child(help)
 
 func _unhandled_input(event):
+	if mission_one and mission_one.is_overlay_open():
+		if event is InputEventKey and event.pressed and event.scancode == KEY_ESCAPE:
+			mission_one.close_dialogue()
+		return
+	if mission_one and mission_one.handle_shortcut(event):
+		return
 	if event is InputEventMouseMotion and Input.get_mouse_mode() == Input.MOUSE_MODE_CAPTURED:
 		player.rotate_y(deg2rad(-event.relative.x * 0.12))
 		look_x = clamp(look_x - event.relative.y * 0.12, -80, 80)
@@ -308,7 +325,8 @@ func _unhandled_input(event):
 	if event is InputEventKey and event.pressed and event.scancode == KEY_ESCAPE:
 		Input.set_mouse_mode(Input.MOUSE_MODE_VISIBLE)
 	if event.is_action_pressed("interact"):
-		toggle_car()
+		if not mission_one or not mission_one.handle_interact():
+			toggle_car()
 	if event.is_action_pressed("equip") and not in_car:
 		set_weapon("" if equipped_weapon == "pistol" else "pistol")
 	if event.is_action_pressed("equip_bazooka") and not in_car:
@@ -320,14 +338,23 @@ func _unhandled_input(event):
 			shoot()
 
 func _physics_process(delta):
-	if in_car:
-		drive(delta)
-	else:
-		walk(delta)
+	car_damage_cooldown = max(0.0, car_damage_cooldown - delta)
+	var controls_locked = mission_one and mission_one.controls_locked()
+	if not controls_locked:
+		if in_car:
+			drive(delta)
+		else:
+			walk(delta)
 	update_emergency_vehicles(delta)
 	update_police_officers(delta)
+	if mission_one:
+		mission_one.update_mission(delta)
 	var near_car = player.global_transform.origin.distance_to(car.global_transform.origin) < 3.5
-	prompt.text = "[E] Einsteigen" if near_car and not in_car else ("[E] Aussteigen" if in_car else "")
+	var mission_prompt = mission_one.get_context_prompt() if mission_one else ""
+	if mission_prompt != "":
+		prompt.text = mission_prompt
+	else:
+		prompt.text = "[E] Einsteigen" if near_car and not in_car else ("[E] Aussteigen" if in_car else "")
 
 func input_vector() -> Vector2:
 	return Vector2(Input.get_action_strength("move_right") - Input.get_action_strength("move_left"), Input.get_action_strength("move_back") - Input.get_action_strength("move_forward")).normalized()
@@ -340,11 +367,15 @@ func walk(delta):
 	velocity.y = -0.5 if player.is_on_floor() else velocity.y - GRAVITY * delta
 	if Input.is_action_just_pressed("jump") and player.is_on_floor():
 		velocity.y = 9.0
-	velocity = player.move_and_slide(velocity, Vector3.UP)
+	# Finite inertia lets the player physically push Mission 1's rigid puzzle crate.
+	velocity = player.move_and_slide(velocity, Vector3.UP, false, 4, deg2rad(46), false)
 
 func drive(delta):
 	var input = input_vector()
 	var throttle = -input.y
+	if car_fuel <= 0.0 or car_health <= 0:
+		throttle = 0.0
+	consume_car_fuel(throttle, delta)
 	var acceleration = 15.0 if throttle >= 0 else 22.0
 	if abs(throttle) > 0.05:
 		car_speed = move_toward(car_speed, throttle * DRIVE_SPEED, acceleration * delta)
@@ -359,12 +390,34 @@ func drive(delta):
 	car_speed += Vector3.DOWN.dot(forward) * 9.0 * delta
 	var motion = forward * car_speed + Vector3.DOWN * 5.0
 	var previous_position = car.global_transform.origin
+	var impact_speed = abs(car_speed)
 	car.move_and_slide(motion, Vector3.UP, true, 4, deg2rad(48))
-	if car.get_slide_count() > 0 and car.global_transform.origin.distance_to(previous_position) < abs(car_speed) * delta * 0.2:
+	var hit_obstacle = false
+	for collision_index in range(car.get_slide_count()):
+		var collision = car.get_slide_collision(collision_index)
+		if collision and abs(collision.normal.y) < 0.55:
+			hit_obstacle = true
+	if hit_obstacle and car.global_transform.origin.distance_to(previous_position) < impact_speed * delta * 0.35:
 		car_speed *= 0.45
+		apply_car_impact_damage(impact_speed)
 	align_car_to_ground(delta)
 	player.global_transform = car.global_transform
 	player.translation.y += 1.2
+	update_status()
+
+func consume_car_fuel(throttle: float, delta: float):
+	if abs(throttle) > 0.05 and car_fuel > 0.0 and car_health > 0:
+		car_fuel = max(0.0, car_fuel - abs(throttle) * delta * 0.20)
+
+func apply_car_impact_damage(impact_speed: float) -> int:
+	if impact_speed <= 9.0 or car_damage_cooldown > 0.0:
+		return 0
+	var damage = int(clamp((impact_speed - 7.0) * 2.0, 4.0, 32.0))
+	car_health = max(0, car_health - damage)
+	car_damage_cooldown = 0.65
+	prompt.text = "Kollision! Fahrzeugschaden: %d%%" % car_health
+	update_status()
+	return damage
 
 func align_car_to_ground(delta):
 	var origin = car.global_transform.origin
@@ -516,6 +569,7 @@ func collapse_building(building):
 	building.queue_free()
 	prompt.text = "Gebäude zerstört – Feuerwehr alarmiert"
 	dispatch_fire_department(Vector3(building_position.x, ground_y, building_position.z))
+	dispatch_police(Vector3(building_position.x, ground_y, building_position.z), 2)
 
 func nearest_road(value: float) -> float:
 	var result = -180.0
@@ -578,7 +632,9 @@ func dispatch_fire_department(incident: Vector3):
 	emergency_vehicles.append({"node": engine, "kind": "fire", "target": fire_target, "incident": incident, "arrived": false})
 	alert_label.text = "FEUERWEHR AUF ANFAHRT"
 
-func dispatch_police(incident: Vector3):
+func dispatch_police(incident: Vector3, severity := 1):
+	wanted_level = min(3, wanted_level + int(severity))
+	update_status()
 	police_dispatch_count += 1
 	for unit in range(2):
 		var route = response_route(incident, police_dispatch_count + unit)
@@ -741,4 +797,13 @@ func update_status():
 		weapon_name = "Pistole"
 	elif equipped_weapon == "bazooka":
 		weapon_name = "Bazooka"
-	status.text = ("IM AUTO" if in_car else "ZU FUSS") + " | HP %d | Waffe: %s" % [player_health, weapon_name]
+	var wanted_text = ""
+	if wanted_level > 0:
+		var stars = ""
+		for _star in range(wanted_level):
+			stars += "★"
+		wanted_text = " | FAHNDUNG %s" % stars
+	var vehicle_text = ""
+	if in_car:
+		vehicle_text = " | BENZIN %d%% | AUTO %d%%" % [int(ceil(car_fuel)), car_health]
+	status.text = ("IM AUTO" if in_car else "ZU FUSS") + " | HP %d%s%s | Waffe: %s" % [player_health, vehicle_text, wanted_text, weapon_name]
