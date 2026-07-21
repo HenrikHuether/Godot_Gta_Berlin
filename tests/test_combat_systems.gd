@@ -16,6 +16,12 @@ func _run():
 	yield(self, "idle_frame")
 	yield(self, "physics_frame")
 	main.set_physics_process(false)
+	main.set_process(false)
+	_expect(is_instance_valid(main.player_collider), "main should retain a direct reference to the player collider")
+	_expect(
+		main.player.get_node_or_null("CollisionShape") == main.player_collider,
+		"player collider should have the stable CollisionShape node name used by gameplay code"
+	)
 
 	_test_weapon_models_and_selection(main)
 	_test_procedural_audio(main)
@@ -46,6 +52,7 @@ func _run():
 
 	_test_reload_transfer(main)
 	_test_player_damage(main)
+	_test_player_death_sequence(main)
 	_test_damageable_vehicles(main)
 
 	# The rifle target is behind the officer and cannot obstruct this shot, but
@@ -67,7 +74,7 @@ func _run():
 		_test_police_officer_and_shot(main, officer)
 
 	if failures.empty():
-		print("PASS: combat weapons, audio, ammunition, vehicle damage, reload, and police shooting")
+		print("PASS: combat, audio, vehicle damage, death fade, reload, and police shooting")
 		quit(0)
 	else:
 		for failure in failures:
@@ -164,6 +171,54 @@ func _test_player_damage(main):
 	main.damage_player(17)
 	_expect(main.player_health == 83, "damage_player should subtract non-lethal damage from player HP")
 	_expect(main.damage_flash_time > 0.0, "player damage should trigger visual feedback")
+
+
+func _test_player_death_sequence(main):
+	# Exercise the occupied-car branch as well: death must eject the player before
+	# the physical presentation starts, then keep input locked through fade-in.
+	main.in_car = true
+	main.player.global_transform = main.car.global_transform
+	main.player.get_node("CollisionShape").disabled = true
+	main.player_health = 5
+	main.damage_player(5)
+	_expect(main.player_dying, "zero HP should start a single locked death sequence")
+	_expect(main.player_health == 0, "death sequence should visibly retain zero HP before respawn")
+	_expect(not main.in_car, "lethal damage in a car should eject the player before the fall")
+	_expect(main.player.global_transform.origin.distance_to(main.car.global_transform.origin) > 2.4, "death ejection should place the player safely beside the car")
+	_expect(main.death_fade_overlay.visible, "zero HP should reveal the fullscreen black fade")
+	_expect(main.death_fade_layer.layer == 100, "death fade should render above every mission UI layer")
+	var health_during_death = main.player_health
+	main.damage_player(50)
+	_expect(main.player_health == health_during_death, "additional hits should be ignored during the death sequence")
+
+	main.update_player_death(0.78)
+	_expect(main.player.rotation_degrees.x > 20.0, "death animation should tip the player backwards")
+	_expect(main.death_fade_overlay.color.a > 0.15, "black fade should advance while the player falls")
+
+	main.update_player_death(0.60)
+	_expect(main.death_fade_overlay.color.a > 0.95, "screen should become fully black before the respawn is shown")
+	_expect(main.player_health == 100, "player should respawn behind the opaque overlay")
+	_expect(main.player_dying, "controls should remain locked until the image fades back in")
+	main.damage_player(25)
+	_expect(main.player_health == 100, "player should remain invulnerable while the respawn fades back in")
+
+	main.update_player_death(1.05)
+	_expect(not main.player_dying, "death sequence should unlock controls exactly after fade-in")
+	_expect(not main.death_fade_overlay.visible, "death overlay should hide after fade-in")
+	_expect(main.player.rotation_degrees == Vector3.ZERO, "respawn should restore the upright player rotation")
+	_expect(main.camera.rotation_degrees == Vector3.ZERO, "respawn should restore the level first-person camera")
+	_expect(not main.player.get_node("CollisionShape").disabled, "respawn should re-enable the player collider")
+
+	# Run the same trigger a second time on foot. This covers the normal police
+	# kill path and proves that no stale state prevents another death animation.
+	main.in_car = false
+	main.player.get_node("CollisionShape").disabled = false
+	main.player_health = 1
+	main.damage_player(1)
+	_expect(main.player_dying and main.player_health == 0, "a later on-foot zero-HP hit should start the animation again")
+	main.update_player_death(2.50)
+	_expect(not main.player_dying and main.player_health == 100, "second death sequence should complete exactly once")
+	_expect(not main.player.get_node("CollisionShape").disabled, "on-foot respawn should leave the collider enabled")
 
 
 func _test_damageable_vehicles(main):

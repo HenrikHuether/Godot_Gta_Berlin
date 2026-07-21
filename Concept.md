@@ -12,6 +12,7 @@ Features:
 6)Police units use detailed uniforms, equipment and collidable patrol cars
 7)Cars take weapon/collision damage, explode and burn with positional sound
 8)Procedural positional audio for guns, rockets, explosions and fire
+9)At zero health the player falls backwards before a fade-to-black respawn
 
 Mission 1: Sonderzustellung
 - Einen Aktenkoffer mit dem Auto in das Regierungsviertel bringen

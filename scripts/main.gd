@@ -10,8 +10,21 @@ const GRAVITY = 24.0
 const POLICE_SPEED = 16.0
 const OFFICER_SPEED = 5.2
 const FIRE_ENGINE_SPEED = 13.0
+const DEATH_FALL_DURATION = 0.90
+const DEATH_FADE_DELAY = 0.15
+const DEATH_FADE_OUT_DURATION = 1.05
+const DEATH_BLACK_HOLD_DURATION = 0.35
+const DEATH_FADE_IN_DURATION = 0.65
+
+enum PlayerDeathPhase {
+	ALIVE,
+	FALLING,
+	BLACK_HOLD,
+	FADE_IN
+}
 
 var player: KinematicBody
+var player_collider: CollisionShape
 var camera: Camera
 var car: KinematicBody
 var car_body: MeshInstance
@@ -52,6 +65,16 @@ var ammo_reserve = {"pistol": 45, "rifle": 120, "bazooka": 3}
 var magazine_capacity = {"pistol": 15, "rifle": 30, "bazooka": 1}
 var damage_overlay: ColorRect
 var damage_flash_time = 0.0
+var death_fade_layer: CanvasLayer
+var death_fade_overlay: ColorRect
+var player_dying = false
+var player_death_phase = PlayerDeathPhase.ALIVE
+var death_elapsed = 0.0
+var death_start_position = Vector3.ZERO
+var death_fall_position = Vector3.ZERO
+var death_start_rotation = Vector3.ZERO
+var death_fall_rotation = Vector3.ZERO
+var death_start_camera_rotation = Vector3.ZERO
 var sound_streams = {}
 var vehicle_fires = []
 var destroyed_vehicles = []
@@ -229,12 +252,13 @@ func build_player():
 	player = KinematicBody.new()
 	player.name = "Player"
 	player.translation = Vector3(3, 8, 8)
-	var collider = CollisionShape.new()
+	player_collider = CollisionShape.new()
+	player_collider.name = "CollisionShape"
 	var capsule = CapsuleShape.new()
 	capsule.radius = 0.45
 	capsule.height = 1.70
-	collider.shape = capsule
-	player.add_child(collider)
+	player_collider.shape = capsule
+	player.add_child(player_collider)
 	camera = Camera.new()
 	camera.translation = Vector3(0, 0.65, 0)
 	camera.far = 10000.0
@@ -353,6 +377,7 @@ func build_car():
 		add_box(car, "Headlight", Vector3(x, 0.18, -2.09), Vector3(0.48, 0.22, 0.08), Color("fff0ad"), false)
 		add_box(car, "TailLight", Vector3(x, 0.18, 2.09), Vector3(0.48, 0.22, 0.08), Color("e31e27"), false)
 	var collider = CollisionShape.new()
+	collider.name = "CollisionShape"
 	var shape = BoxShape.new()
 	shape.extents = Vector3(1.1, 0.5, 2.1)
 	collider.shape = shape
@@ -445,8 +470,24 @@ func build_ui():
 	damage_overlay.color = Color(0.72, 0.02, 0.01, 0.0)
 	damage_overlay.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	layer.add_child(damage_overlay)
+	death_fade_layer = CanvasLayer.new()
+	death_fade_layer.name = "DeathFadeLayer"
+	death_fade_layer.layer = 100
+	add_child(death_fade_layer)
+	death_fade_overlay = ColorRect.new()
+	death_fade_overlay.name = "DeathFade"
+	death_fade_overlay.anchor_right = 1.0
+	death_fade_overlay.anchor_bottom = 1.0
+	death_fade_overlay.color = Color(0, 0, 0, 0)
+	death_fade_overlay.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	death_fade_overlay.visible = false
+	death_fade_layer.add_child(death_fade_overlay)
 
 func _unhandled_input(event):
+	if player_dying:
+		if event is InputEventKey and event.pressed and event.scancode == KEY_ESCAPE:
+			Input.set_mouse_mode(Input.MOUSE_MODE_VISIBLE)
+		return
 	if mission_one and mission_one.is_overlay_open():
 		if event is InputEventKey and event.pressed and event.scancode == KEY_ESCAPE:
 			mission_one.close_dialogue()
@@ -483,7 +524,9 @@ func _unhandled_input(event):
 
 func _physics_process(delta):
 	car_damage_cooldown = max(0.0, car_damage_cooldown - delta)
-	var controls_locked = mission_one and mission_one.controls_locked()
+	if player_dying:
+		update_player_death(delta)
+	var controls_locked = player_dying or (mission_one and mission_one.controls_locked())
 	update_weapon_system(delta, controls_locked)
 	update_damage_feedback(delta)
 	if not controls_locked:
@@ -494,11 +537,13 @@ func _physics_process(delta):
 	update_emergency_vehicles(delta)
 	update_police_officers(delta)
 	update_vehicle_fires(delta)
-	if mission_one:
+	if mission_one and not player_dying:
 		mission_one.update_mission(delta)
 	var near_car = player.global_transform.origin.distance_to(car.global_transform.origin) < 3.5
 	var mission_prompt = mission_one.get_context_prompt() if mission_one else ""
-	if mission_prompt != "":
+	if player_dying:
+		prompt.text = ""
+	elif mission_prompt != "":
 		prompt.text = mission_prompt
 	else:
 		if near_car and not in_car and car.has_meta("destroyed") and bool(car.get_meta("destroyed")):
@@ -591,12 +636,12 @@ func toggle_car():
 	if in_car:
 		in_car = false
 		player.translation = car.translation + car.global_transform.basis.x * 2.2 + Vector3.UP
-		player.get_node("CollisionShape").disabled = false
+		player_collider.disabled = false
 		car_body.visible = true
 	elif player.global_transform.origin.distance_to(car.global_transform.origin) < 3.5 and not bool(car.get_meta("destroyed")):
 		in_car = true
 		set_weapon("")
-		player.get_node("CollisionShape").disabled = true
+		player_collider.disabled = true
 	update_status()
 
 func set_weapon(weapon: String):
@@ -859,7 +904,7 @@ func destroy_vehicle(vehicle, create_blast := true):
 		if in_car:
 			in_car = false
 			player.global_transform = Transform(car.global_transform.basis, car.global_transform.origin + car.global_transform.basis.x * 2.8 + Vector3.UP)
-			player.get_node("CollisionShape").disabled = false
+			player_collider.disabled = false
 			set_weapon("")
 			damage_player(35)
 		alert_label.text = "FAHRZEUG ZERSTÖRT"
@@ -1265,10 +1310,10 @@ func update_police_officers(delta):
 		officer.set_meta("shoot_cooldown", cooldown)
 
 func police_shoot(officer):
-	if not is_instance_valid(officer):
+	if not is_instance_valid(officer) or player_dying:
 		return
 	var target_body = car if in_car else player
-	var target_shape = target_body.get_node_or_null("CollisionShape")
+	var target_shape = player_collider if target_body == player else target_body.get_node_or_null("CollisionShape")
 	var aim_point = target_shape.global_transform.origin if target_shape else target_body.global_transform.origin
 	# The player's origin is the capsule centre. Aim slightly below it, squarely
 	# through the lower chest/upper abdomen, so the visible trace cannot pass overhead.
@@ -1306,19 +1351,126 @@ func police_shoot(officer):
 		damage_player(12)
 
 func damage_player(amount: int):
+	if player_dying or amount <= 0:
+		return
 	player_health = max(0, player_health - amount)
 	damage_flash_time = 0.38
 	prompt.text = "Du wirst beschossen!"
 	update_status()
 	if player_health <= 0:
+		start_player_death()
+
+func start_player_death():
+	if player_dying:
+		return
+	player_dying = true
+	player_health = 0
+	velocity = Vector3.ZERO
+	car_speed = 0.0
+	if mission_one and mission_one.is_overlay_open():
+		mission_one.close_dialogue()
+	if in_car:
 		in_car = false
-		player.get_node("CollisionShape").disabled = false
-		set_weapon("")
-		player.translation = Vector3(3, 4, 8)
-		velocity = Vector3.ZERO
-		player_health = 100
-		alert_label.text = "ERWISCHT – ZURÜCK AM START"
-		update_status()
+		var exit_position = car.global_transform.origin + car.global_transform.basis.x * 2.6 + Vector3.UP * 0.8
+		var car_yaw = car.rotation_degrees.y
+		player.global_transform = Transform(Basis(), exit_position)
+		player.rotation_degrees.y = car_yaw
+	else:
+		player.rotation_degrees = Vector3(0, player.rotation_degrees.y, 0)
+	if is_instance_valid(player_collider) and not player_collider.disabled:
+		player_collider.set_deferred("disabled", true)
+	set_weapon("")
+	alert_label.text = "ERWISCHT"
+	prompt.text = ""
+	death_fade_overlay.visible = true
+	death_fade_overlay.color = Color(0, 0, 0, 0)
+	player_death_phase = PlayerDeathPhase.FALLING
+	death_elapsed = 0.0
+	death_start_position = player.translation
+	var backward = player.global_transform.basis.z
+	backward.y = 0.0
+	backward = backward.normalized() if backward.length() > 0.01 else Vector3(0, 0, 1)
+	death_fall_position = death_start_position + backward * 1.05 + Vector3.DOWN * 0.72
+	death_start_rotation = player.rotation_degrees
+	death_fall_rotation = Vector3(82.0, death_start_rotation.y, death_start_rotation.z + 5.0)
+	death_start_camera_rotation = camera.rotation_degrees
+	update_player_death_fall_visuals()
+	update_status()
+
+func update_player_death(delta: float):
+	# Consume all of delta so even a slow frame cannot skip the black hold or
+	# leave the state machine between phases.
+	var remaining = max(0.0, delta)
+	while remaining > 0.00001 and player_dying:
+		if player_death_phase == PlayerDeathPhase.FALLING:
+			var fade_out_total = DEATH_FADE_DELAY + DEATH_FADE_OUT_DURATION
+			var fall_step = min(remaining, fade_out_total - death_elapsed)
+			death_elapsed += fall_step
+			remaining -= fall_step
+			update_player_death_fall_visuals()
+			if death_elapsed >= fade_out_total - 0.00001:
+				set_death_fade_alpha(1.0)
+				player_death_phase = PlayerDeathPhase.BLACK_HOLD
+				death_elapsed = 0.0
+				commit_player_respawn()
+		elif player_death_phase == PlayerDeathPhase.BLACK_HOLD:
+			var hold_step = min(remaining, DEATH_BLACK_HOLD_DURATION - death_elapsed)
+			death_elapsed += hold_step
+			remaining -= hold_step
+			set_death_fade_alpha(1.0)
+			if death_elapsed >= DEATH_BLACK_HOLD_DURATION - 0.00001:
+				player_death_phase = PlayerDeathPhase.FADE_IN
+				death_elapsed = 0.0
+		elif player_death_phase == PlayerDeathPhase.FADE_IN:
+			var fade_in_step = min(remaining, DEATH_FADE_IN_DURATION - death_elapsed)
+			death_elapsed += fade_in_step
+			remaining -= fade_in_step
+			var fade_in_progress = clamp(death_elapsed / DEATH_FADE_IN_DURATION, 0.0, 1.0)
+			set_death_fade_alpha(pow(1.0 - fade_in_progress, 2.0))
+			if death_elapsed >= DEATH_FADE_IN_DURATION - 0.00001:
+				complete_player_respawn()
+		else:
+			complete_player_respawn()
+
+func update_player_death_fall_visuals():
+	var fall_progress = clamp(death_elapsed / DEATH_FALL_DURATION, 0.0, 1.0)
+	var fall_eased = pow(fall_progress, 3.0)
+	player.translation = death_start_position.linear_interpolate(death_fall_position, fall_eased)
+	player.rotation_degrees = death_start_rotation.linear_interpolate(death_fall_rotation, fall_eased)
+	var camera_progress = clamp(death_elapsed / 0.65, 0.0, 1.0)
+	var camera_eased = 1.0 - pow(1.0 - camera_progress, 2.0)
+	camera.rotation_degrees = death_start_camera_rotation.linear_interpolate(Vector3(0, 0, -4), camera_eased)
+	var fade_progress = clamp((death_elapsed - DEATH_FADE_DELAY) / DEATH_FADE_OUT_DURATION, 0.0, 1.0)
+	set_death_fade_alpha(pow(fade_progress, 2.0))
+
+func set_death_fade_alpha(alpha: float):
+	var fade_color = death_fade_overlay.color
+	fade_color.a = clamp(alpha, 0.0, 1.0)
+	death_fade_overlay.color = fade_color
+
+func commit_player_respawn():
+	# Reset behind the opaque overlay so the teleport is never visible.
+	player.global_transform = Transform(Basis(), Vector3(3, 4, 8))
+	player.rotation_degrees = Vector3.ZERO
+	camera.rotation_degrees = Vector3.ZERO
+	look_x = 0.0
+	velocity = Vector3.ZERO
+	player_health = 100
+	# The state update runs before movement in _physics_process(), so enabling the
+	# collider here is deterministic before controls can unlock.
+	if is_instance_valid(player_collider):
+		player_collider.disabled = false
+		player_collider.set_deferred("disabled", false)
+	alert_label.text = "ERWISCHT – ZURÜCK AM START"
+	update_status()
+
+func complete_player_respawn():
+	death_fade_overlay.color = Color(0, 0, 0, 0)
+	death_fade_overlay.visible = false
+	player_death_phase = PlayerDeathPhase.ALIVE
+	death_elapsed = 0.0
+	player_dying = false
+	update_status()
 
 func update_damage_feedback(delta: float):
 	if not is_instance_valid(damage_overlay):

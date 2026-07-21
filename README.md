@@ -91,6 +91,8 @@ Missionstest kontrolliert zusätzlich Kartengröße und die freie Reichstag-Bauf
   Torso und Deckung unterbricht den Trefferstrahl.
 - Spielerauto, Polizeiwagen und Feuerwehrfahrzeuge sind durch Kugeln, Raketen,
   Explosionsschaden und Kollisionen zerstörbar.
+- Bei 0 HP kippt der Spieler rückwärts um. Eine vollständige Schwarzblende verdeckt den
+  anschließenden Respawn und gibt die Steuerung erst nach dem Einblenden wieder frei.
 - Bazooka-Treffer zerstören Gebäude. Das Gebäude wird durch ein kollidierendes Trümmerfeld
   mit Brandstellen ersetzt und ein Feuerwehrfahrzeug rückt über die nächste Straße an.
 - Die Feuerwehr steigt am Einsatzort aus und löscht den Brand nach kurzer Zeit.
