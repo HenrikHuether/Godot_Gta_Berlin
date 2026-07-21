@@ -2,8 +2,13 @@ extends Spatial
 
 const BERLIN_MAP_SCENE = preload("res://scenes/BerlinMap.tscn")
 const HUMAN_SCENE = preload("res://Assets/HumanV2.glb")
+const GOLF_SCENE = preload("res://Assets/Golf7ModelV3.glb")
 const MISSION_ONE_SCRIPT = preload("res://scripts/mission_one.gd")
 const MAP_EXPANSION_SCRIPT = preload("res://scripts/map_expansion.gd")
+const GOLF_VISUAL_SCALE = 0.65
+const GOLF_VISUAL_OFFSET = Vector3(0.0, -0.52, 0.0)
+const GOLF_COLLIDER_EXTENTS = Vector3(1.06, 0.72, 2.14)
+const GOLF_GROUND_HEIGHT = 0.72
 const WALK_SPEED = 8.0
 const DRIVE_SPEED = 22.0
 const GRAVITY = 24.0
@@ -27,7 +32,7 @@ var player: KinematicBody
 var player_collider: CollisionShape
 var camera: Camera
 var car: KinematicBody
-var car_body: MeshInstance
+var car_body: Spatial
 var weapon_pivot: Spatial
 var pistol_model: Spatial
 var bazooka_model: Spatial
@@ -165,28 +170,6 @@ func material(color: Color) -> SpatialMaterial:
 	var mat = SpatialMaterial.new()
 	mat.albedo_color = color
 	mat.roughness = 0.85
-	return mat
-
-func textured_car_paint() -> SpatialMaterial:
-	# Small procedural paint texture: dark red squares give the body visible panel detail.
-	var image = Image.new()
-	image.create(64, 64, false, Image.FORMAT_RGBA8)
-	image.lock()
-	for y in range(64):
-		for x in range(64):
-			var panel = (x / 16 + y / 16) % 2
-			var edge = x % 16 < 2 or y % 16 < 2
-			var color = Color("8e1720") if panel == 0 else Color("bd2932")
-			if edge:
-				color = Color("5b1015")
-			image.set_pixel(x, y, color)
-	image.unlock()
-	var texture = ImageTexture.new()
-	texture.create_from_image(image, Texture.FLAG_REPEAT | Texture.FLAG_MIPMAPS)
-	var mat = SpatialMaterial.new()
-	mat.albedo_texture = texture
-	mat.roughness = 0.35
-	mat.metallic = 0.25
 	return mat
 
 func add_box(parent: Node, name: String, pos: Vector3, size: Vector3, color: Color, collision := true):
@@ -354,36 +337,68 @@ func build_car():
 	car.name = "Car"
 	car.translation = Vector3(2.8, 8, -4)
 	register_damageable_vehicle(car, 100, "player_car")
-	var paint = textured_car_paint()
-	car_body = add_box(car, "Body", Vector3(0, 0, 0.05), Vector3(2.1, 0.65, 3.75), Color("c3282f"), false)
-	car_body.mesh.material = paint
-	var hood = add_box(car, "Hood", Vector3(0, 0.30, -1.48), Vector3(1.95, 0.22, 1.15), Color("c3282f"), false)
-	hood.mesh.material = paint
-	var trunk = add_box(car, "Trunk", Vector3(0, 0.28, 1.55), Vector3(1.95, 0.25, 0.72), Color("c3282f"), false)
-	trunk.mesh.material = paint
-	# Separate pillars and glass make a recognizable cabin instead of one large box.
-	add_box(car, "Roof", Vector3(0, 1.12, 0.30), Vector3(1.65, 0.14, 1.72), Color("75151c"), false)
-	add_box(car, "Windshield", Vector3(0, 0.83, -0.58), Vector3(1.62, 0.55, 0.08), Color("47788e"), false).rotation_degrees.x = -18
-	add_box(car, "RearWindow", Vector3(0, 0.83, 1.18), Vector3(1.62, 0.50, 0.08), Color("47788e"), false).rotation_degrees.x = 18
-	for side in [-1, 1]:
-		add_box(car, "SideWindow", Vector3(side * 0.86, 0.82, 0.30), Vector3(0.06, 0.48, 1.15), Color("315d71"), false)
-		add_box(car, "Mirror", Vector3(side * 1.13, 0.65, -0.55), Vector3(0.26, 0.16, 0.30), Color("5b1015"), false)
-		for z in [-1.25, 1.28]:
-			add_cylinder(car, "Wheel", Vector3(side * 1.06, -0.22, z), 0.43, 0.28, Color("111215"), Vector3(0, 0, 90))
-			add_cylinder(car, "Rim", Vector3(side * 1.22, -0.22, z), 0.22, 0.04, Color("aeb4ba"), Vector3(0, 0, 90))
-	add_box(car, "FrontBumper", Vector3(0, -0.05, -2.00), Vector3(2.05, 0.20, 0.16), Color("25282b"), false)
-	add_box(car, "RearBumper", Vector3(0, -0.05, 2.00), Vector3(2.05, 0.20, 0.16), Color("25282b"), false)
-	for x in [-0.68, 0.68]:
-		add_box(car, "Headlight", Vector3(x, 0.18, -2.09), Vector3(0.48, 0.22, 0.08), Color("fff0ad"), false)
-		add_box(car, "TailLight", Vector3(x, 0.18, 2.09), Vector3(0.48, 0.22, 0.08), Color("e31e27"), false)
+	car_body = add_golf_visual(car)
+	add_golf_collision(car)
+	add_child(car)
+	call_deferred("place_car_on_ground")
+
+func add_golf_visual(parent: Node, police_variant := false) -> Spatial:
+	# The supplied GLB points toward +Z. Rotate its visual wrapper so it follows
+	# the driving code's -Z forward convention, and scale it to real Golf size.
+	var visual = Spatial.new()
+	visual.name = "Golf7Visual"
+	visual.translation = GOLF_VISUAL_OFFSET
+	visual.rotation_degrees.y = 180.0
+	visual.scale = Vector3.ONE * GOLF_VISUAL_SCALE
+	parent.add_child(visual)
+	var model = GOLF_SCENE.instance()
+	model.name = "Golf7Model"
+	visual.add_child(model)
+	configure_golf_materials(model, police_variant)
+	return visual
+
+func configure_golf_materials(node: Node, police_variant: bool):
+	if node is MeshInstance and node.mesh:
+		for surface_index in range(node.mesh.get_surface_count()):
+			var source_material = node.mesh.surface_get_material(surface_index)
+			var material_name = source_material.resource_name if source_material else ""
+			# The source has one deliberately unassigned detail surface. Give it an
+			# explicit metallic trim color so its appearance is renderer-independent.
+			if not source_material and node.name == "Auto":
+				var trim = material(Color("d9dcdd"))
+				trim.roughness = 0.32
+				trim.metallic = 0.58
+				node.set_surface_material(surface_index, trim)
+			elif police_variant and (material_name == "Carosse" or (node.name == "Auto" and surface_index == 1)):
+				var police_paint = material(Color("dfe3e5"))
+				police_paint.roughness = 0.34
+				police_paint.metallic = 0.22
+				node.set_surface_material(surface_index, police_paint)
+	for child in node.get_children():
+		configure_golf_materials(child, police_variant)
+
+func add_golf_collision(vehicle: KinematicBody) -> CollisionShape:
 	var collider = CollisionShape.new()
 	collider.name = "CollisionShape"
 	var shape = BoxShape.new()
-	shape.extents = Vector3(1.1, 0.5, 2.1)
+	shape.extents = GOLF_COLLIDER_EXTENTS
 	collider.shape = shape
-	car.add_child(collider)
-	add_child(car)
-	call_deferred("place_car_on_ground")
+	vehicle.add_child(collider)
+	return collider
+
+func add_police_golf_livery(vehicle: KinematicBody):
+	add_box(vehicle, "LightbarBase", Vector3(0, 0.76, 0), Vector3(1.14, 0.08, 0.30), Color("222a31"), false)
+	for side in [-1, 1]:
+		add_box(vehicle, "BlueSideStripe", Vector3(side * 1.065, -0.04, 0.05), Vector3(0.035, 0.28, 2.90), Color("1765a2"), false)
+		add_box(vehicle, "PoliceDoorPanel", Vector3(side * 1.087, 0.00, 0.05), Vector3(0.018, 0.20, 1.08), Color("edf0f0"), false)
+		var door_label = Label3D.new()
+		door_label.name = "PoliceDoorLabelLeft" if side < 0 else "PoliceDoorLabelRight"
+		door_label.text = "POLIZEI"
+		door_label.translation = Vector3(side * 1.105, 0.00, 0.05)
+		door_label.rotation_degrees.y = float(side) * 90.0
+		door_label.pixel_size = 0.012
+		door_label.modulate = Color("175f98")
+		vehicle.add_child(door_label)
 
 func place_car_on_ground():
 	var origin = car.global_transform.origin
@@ -396,7 +411,7 @@ func place_car_on_ground():
 		excluded
 	)
 	if hit:
-		car.translation.y = hit.position.y + 0.72
+		car.translation.y = hit.position.y + GOLF_GROUND_HEIGHT
 
 func build_npcs():
 	var positions = [Vector3(-5, 8, -8), Vector3(8, 8, 5), Vector3(-8, 8, 12)]
@@ -1122,42 +1137,9 @@ func create_emergency_vehicle(kind: String, spawn_position: Vector3):
 		fire_collision.translation.y = 0.72
 		vehicle.add_child(fire_collision)
 	else:
-		# German patrol-car silhouette: silver body, blue side livery, glass cabin and blue/blue lightbar.
-		add_box(vehicle, "LowerBody", Vector3(0, 0.35, 0), Vector3(2.16, 0.68, 4.55), Color("d9dcdd"), false)
-		add_box(vehicle, "Hood", Vector3(0, 0.66, -1.56), Vector3(2.04, 0.19, 1.24), Color("e9ebeb"), false)
-		add_box(vehicle, "Trunk", Vector3(0, 0.64, 1.72), Vector3(2.02, 0.20, 0.78), Color("e7e9e9"), false)
-		add_box(vehicle, "Roof", Vector3(0, 1.39, 0.20), Vector3(1.72, 0.13, 1.78), Color("e7e9e9"), false)
-		add_box(vehicle, "Windshield", Vector3(0, 1.08, -0.66), Vector3(1.72, 0.59, 0.08), Color("294858"), false).rotation_degrees.x = -19
-		add_box(vehicle, "RearWindow", Vector3(0, 1.08, 1.08), Vector3(1.72, 0.55, 0.08), Color("294858"), false).rotation_degrees.x = 19
-		add_box(vehicle, "LightbarBase", Vector3(0, 1.54, 0.13), Vector3(1.15, 0.08, 0.28), Color("222a31"), false)
-		add_box(vehicle, "FrontBumper", Vector3(0, 0.18, -2.33), Vector3(2.18, 0.20, 0.15), Color("22272b"), false)
-		add_box(vehicle, "RearBumper", Vector3(0, 0.18, 2.33), Vector3(2.18, 0.20, 0.15), Color("22272b"), false)
-		add_box(vehicle, "FrontGrille", Vector3(0, 0.48, -2.31), Vector3(0.78, 0.25, 0.08), Color("15191d"), false)
-		for side in [-1, 1]:
-			add_box(vehicle, "SideWindow", Vector3(side * 0.88, 1.08, 0.20), Vector3(0.06, 0.52, 1.20), Color("244555"), false)
-			add_box(vehicle, "BlueSideStripe", Vector3(side * 1.09, 0.61, 0.02), Vector3(0.045, 0.30, 3.63), Color("1765a2"), false)
-			add_box(vehicle, "PoliceDoorPanel", Vector3(side * 1.115, 0.66, 0.20), Vector3(0.025, 0.18, 1.02), Color("e8ecec"), false)
-			var door_label = Label3D.new()
-			door_label.name = "PoliceDoorLabelLeft" if side < 0 else "PoliceDoorLabelRight"
-			door_label.text = "POLIZEI"
-			door_label.translation = Vector3(side * 1.135, 0.66, 0.20)
-			door_label.rotation_degrees.y = float(side) * 90.0
-			door_label.pixel_size = 0.014
-			door_label.modulate = Color("175f98")
-			vehicle.add_child(door_label)
-			add_box(vehicle, "Mirror", Vector3(side * 1.15, 1.00, -0.64), Vector3(0.24, 0.17, 0.28), Color("1c2730"), false)
-			for z in [-1.35, 1.35]:
-				add_cylinder(vehicle, "Wheel", Vector3(side * 1.07, -0.08, z), 0.42, 0.25, Color("111214"), Vector3(0, 0, 90))
-		for x in [-0.70, 0.70]:
-			add_box(vehicle, "Headlight", Vector3(x, 0.58, -2.33), Vector3(0.48, 0.23, 0.08), Color("fff3bd"), false)
-			add_box(vehicle, "TailLight", Vector3(x, 0.56, 2.33), Vector3(0.46, 0.23, 0.08), Color("c83238"), false)
-		var vehicle_collision = CollisionShape.new()
-		vehicle_collision.name = "CollisionShape"
-		var vehicle_shape = BoxShape.new()
-		vehicle_shape.extents = Vector3(1.12, 0.72, 2.35)
-		vehicle_collision.shape = vehicle_shape
-		vehicle_collision.translation.y = 0.55
-		vehicle.add_child(vehicle_collision)
+		add_golf_visual(vehicle, true)
+		add_police_golf_livery(vehicle)
+		add_golf_collision(vehicle)
 	if kind == "fire":
 		var red_light = add_sphere(vehicle, "RedLight", Vector3(-0.30, 1.85, 0), 0.14, Color("ff2020"))
 		var blue_light = add_sphere(vehicle, "BlueLight", Vector3(0.30, 1.85, 0), 0.14, Color("248dff"))
@@ -1167,7 +1149,7 @@ func create_emergency_vehicle(kind: String, spawn_position: Vector3):
 			light_mat.emission = light_mat.albedo_color
 	else:
 		for light_data in [["BlueLightLeft", -0.36], ["BlueLightRight", 0.36]]:
-			var police_light = add_box(vehicle, light_data[0], Vector3(float(light_data[1]), 1.61, 0.13), Vector3(0.56, 0.16, 0.24), Color("167cff"), false)
+			var police_light = add_box(vehicle, light_data[0], Vector3(float(light_data[1]), 0.86, 0), Vector3(0.56, 0.16, 0.24), Color("167cff"), false)
 			var police_light_mat = police_light.mesh.material as SpatialMaterial
 			police_light_mat.emission_enabled = true
 			police_light_mat.emission = Color("167cff")
@@ -1191,8 +1173,8 @@ func dispatch_police(incident: Vector3, severity := 1):
 		var route = response_route(incident, police_dispatch_count + unit)
 		var police_spawn = route[0]
 		var police_target = route[1]
-		police_spawn.y = 0.55
-		police_target.y = 0.55
+		police_spawn.y = GOLF_GROUND_HEIGHT
+		police_target.y = GOLF_GROUND_HEIGHT
 		var police_car = create_emergency_vehicle("police", police_spawn + Vector3(unit * 2.6, 0, unit * 2.6))
 		emergency_vehicles.append({"node": police_car, "kind": "police", "target": police_target, "incident": incident, "arrived": false})
 	alert_label.text = "POLIZEI ALARMIERT"

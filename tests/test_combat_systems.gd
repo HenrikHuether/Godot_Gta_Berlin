@@ -225,6 +225,7 @@ func _test_damageable_vehicles(main):
 	_expect(main.car.has_meta("role") and str(main.car.get_meta("role")) == "vehicle", "player car should be registered with the vehicle role")
 	_expect(main.car.has_meta("health"), "player car should expose damageable health metadata")
 	_expect(main.car.has_meta("destroyed") and not bool(main.car.get_meta("destroyed")), "player car should begin undestroyed")
+	_test_golf_vehicle_visual(main.car, false)
 	if main.car.has_meta("health"):
 		var initial_player_car_health = int(main.car.get_meta("health"))
 		main.damage_vehicle(main.car, 9, false)
@@ -247,6 +248,7 @@ func _test_damageable_vehicles(main):
 	_expect(police_car.has_meta("role") and str(police_car.get_meta("role")) == "vehicle", "police car should be registered with the vehicle role")
 	_expect(police_car.has_meta("health"), "police car should expose damageable health metadata")
 	_expect(int(police_car.get_meta("health")) == 160, "police car should begin with 160 HP")
+	_test_golf_vehicle_visual(police_car, true)
 
 	main.damage_vehicle(police_car, 25, false)
 	_expect(int(police_car.get_meta("health")) == 135, "damage_vehicle should reduce police-car HP")
@@ -266,6 +268,28 @@ func _test_damageable_vehicles(main):
 		_expect(is_instance_valid(fire_audio), "vehicle fire should create a 3D audio player")
 		if is_instance_valid(fire_audio):
 			_expect(fire_audio.stream == main.sound_streams["fire"], "vehicle fire should use the looping procedural fire stream")
+
+
+func _test_golf_vehicle_visual(vehicle, police_variant: bool):
+	var visual = vehicle.get_node_or_null("Golf7Visual")
+	_expect(is_instance_valid(visual), "player and police cars should use the Golf7 visual wrapper")
+	if not is_instance_valid(visual):
+		return
+	var model = visual.get_node_or_null("Golf7Model")
+	_expect(is_instance_valid(model), "Golf7 visual wrapper should contain the imported model")
+	if not is_instance_valid(model):
+		return
+	for mesh_name in ["Auto", "Reifen_VL", "Reifen_VR", "Reifen_HL", "Reifen_HR"]:
+		_expect(model.get_node_or_null(mesh_name) is MeshInstance, "Golf7 model should contain mesh %s" % mesh_name)
+	var collider = vehicle.get_node_or_null("CollisionShape")
+	_expect(is_instance_valid(collider) and collider.shape is BoxShape, "Golf7 vehicle should retain a simple box collider")
+	if is_instance_valid(collider) and collider.shape is BoxShape:
+		_expect(collider.shape.extents == Vector3(1.06, 0.72, 2.14), "Golf7 collider should match the scaled model bounds")
+	if police_variant:
+		_expect(vehicle.get_node_or_null("PoliceDoorLabelLeft") is Label3D, "police Golf should retain its left POLIZEI marking")
+		_expect(vehicle.get_node_or_null("PoliceDoorLabelRight") is Label3D, "police Golf should retain its right POLIZEI marking")
+		_expect(vehicle.get_node_or_null("BlueLightLeft") is MeshInstance, "police Golf should retain the left blue beacon")
+		_expect(vehicle.get_node_or_null("BlueLightRight") is MeshInstance, "police Golf should retain the right blue beacon")
 
 
 func _test_police_officer_and_shot(main, officer):

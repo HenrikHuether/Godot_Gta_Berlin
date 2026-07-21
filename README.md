@@ -5,7 +5,7 @@ bildet Berliner Stadtblöcke mit texturierten Gründerzeitfassaden, Straßen, In
 Stadtmobiliar und Landmarken ab. Die NPCs verwenden das riggte Modell `Assets/HumanV2.glb`.
 Eine prozedurale Außenzone erweitert die befahrbare Karte auf 1,4 × 1,4 Kilometer – mit
 Ringstraße, Ausfallstraßen, Gehwegen, Außenbezirken, Beleuchtung und Randbarrieren.
-Das Auto besitzt eine prozedurale Lacktextur und eine mehrteilige Karosserie. Pistole,
+Spieler- und Polizeiauto verwenden ein farbbasiertes Golf-7-Modell ohne Texturen. Pistole,
 Sturmgewehr und Raketenwerfer besitzen eigene First-Person-Modelle. Die Fahrphysik
 berücksichtigt Beschleunigung, Reibung, Steigung und Bodenneigung. Schüsse verwenden
 Magazine, Reservemunition, Nachladezeiten, waffenspezifische Streuung, Rückstoß,
@@ -32,7 +32,7 @@ Alternativ `project.godot` im Godot-Editor öffnen und **F6/F5** drücken.
 - **WASD** – laufen bzw. fahren
 - **Maus** – umsehen
 - **Leertaste** – springen
-- **E** – nahe am roten Auto ein-/aussteigen
+- **E** – nahe am goldgelben Golf ein-/aussteigen
 - **1** – Pistole aus-/einrüsten
 - **2** – Raketenwerfer aus-/einrüsten
 - **3** – Sturmgewehr aus-/einrüsten
@@ -45,7 +45,7 @@ Alternativ `project.godot` im Godot-Editor öffnen und **F6/F5** drücken.
 
 ## Mission 1: Sonderzustellung
 
-1. Mit dem Aktenkoffer in das rote Auto steigen.
+1. Mit dem Aktenkoffer in den goldgelben Golf steigen.
 2. Dem gelben Wegpunkt bis zum Bundestag im Regierungsviertel folgen.
 3. Einen von zwei Zugängen wählen:
    - Den Wachmann über eine freie Texteingabe überzeugen. Die lokale Dialogauswertung

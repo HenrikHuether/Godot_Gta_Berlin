@@ -818,7 +818,7 @@ func set_state(next_state: int):
 	distance_label.text = ""
 	match state:
 		MissionState.ENTER_CAR:
-			objective_label.text = "Steig mit dem Aktenkoffer in das rote Auto."
+			objective_label.text = "Steig mit dem Aktenkoffer in den goldgelben Golf."
 			set_waypoint(game.car.global_transform.origin)
 		MissionState.DRIVE_TO_BUNDESTAG:
 			objective_label.text = "Fahre ins Regierungsviertel zum Bundestag."
