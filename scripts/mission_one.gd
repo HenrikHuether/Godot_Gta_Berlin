@@ -12,12 +12,25 @@ enum MissionState {
 	COMPLETE
 }
 
-const BUILDING_CENTER = Vector3(-218.0, 0.0, -52.0)
-const PARKING_POSITION = Vector3(-218.0, 0.1, -84.0)
-const GUARD_POSITION = Vector3(-213.5, 0.05, -74.0)
-const RECIPIENT_POSITION = Vector3(-218.0, 0.05, -39.5)
-const DELIVERY_POSITION = Vector3(-218.0, 0.2, -44.5)
-const CRATE_START = Vector3(-245.0, 0.80, -52.0)
+const BUILDING_CENTER = Vector3(-135.0, 0.0, -40.0)
+const PARKING_POSITION = Vector3(-56.0, 0.1, -92.0)
+const GUARD_POSITION = Vector3(-130.5, 0.05, -99.5)
+const RECIPIENT_POSITION = Vector3(-135.0, 0.05, -52.0)
+const DELIVERY_POSITION = Vector3(-135.0, 0.2, -58.5)
+const CRATE_START = Vector3(-210.0, 0.80, -40.0)
+
+const BUILDING_LENGTH := 138.0
+const BUILDING_WIDTH := 98.0
+const BUILDING_HEIGHT := 24.0
+const DOME_RADIUS := 20.0
+const DOME_HEIGHT := 23.5
+const DOME_OPENING_RADIUS := 4.0
+const DOME_RING_COUNT := 17
+const DOME_RIB_COUNT := 24
+const SITE_CLEARANCE := 0.75
+const SITE_APRON_LOCAL_CENTER_Z := -56.0
+const SITE_APRON_HALF_WIDTH := 75.0
+const SITE_APRON_HALF_DEPTH := 7.0
 
 var game
 var state = MissionState.ENTER_CAR
@@ -60,6 +73,7 @@ func setup(game_root):
 	game = game_root
 	started_msec = OS.get_ticks_msec()
 	evaluator = PERSUASION_EVALUATOR.new()
+	prepare_bundestag_site()
 	build_bundestag()
 	build_mission_characters()
 	build_push_crate()
@@ -128,6 +142,22 @@ func add_visual_cylinder(parent: Node, node_name: String, position: Vector3, rad
 	return mesh_instance
 
 
+func add_visual_frustum(parent: Node, node_name: String, position: Vector3, bottom_radius: float, top_radius: float, height: float, color: Color) -> MeshInstance:
+	var mesh_instance = MeshInstance.new()
+	mesh_instance.name = node_name
+	mesh_instance.translation = position
+	var mesh = CylinderMesh.new()
+	mesh.bottom_radius = bottom_radius
+	mesh.top_radius = top_radius
+	mesh.height = height
+	mesh.radial_segments = 24
+	mesh.rings = 4
+	mesh.material = make_material(color)
+	mesh_instance.mesh = mesh
+	parent.add_child(mesh_instance)
+	return mesh_instance
+
+
 func add_visual_sphere(parent: Node, node_name: String, position: Vector3, radius: float, color: Color) -> MeshInstance:
 	var mesh_instance = MeshInstance.new()
 	mesh_instance.name = node_name
@@ -143,57 +173,452 @@ func add_visual_sphere(parent: Node, node_name: String, position: Vector3, radiu
 	return mesh_instance
 
 
+func prepare_bundestag_site():
+	if game == null:
+		return
+	var berlin_map = game.get_node_or_null("BerlinMap")
+	if berlin_map == null:
+		return
+
+	# Roof and cornices project one metre beyond the 138 x 98 metre wall shell.
+	# The union with the west entrance apron is the complete area that must be
+	# clear. A small tolerance prevents coplanar facade faces from flickering.
+	var shell_half_width = BUILDING_LENGTH * 0.5 + 1.0
+	var shell_half_depth = BUILDING_WIDTH * 0.5 + 1.0
+	var site_min = Vector2(
+		BUILDING_CENTER.x - max(shell_half_width, SITE_APRON_HALF_WIDTH) - SITE_CLEARANCE,
+		min(
+			BUILDING_CENTER.z - shell_half_depth,
+			BUILDING_CENTER.z + SITE_APRON_LOCAL_CENTER_Z - SITE_APRON_HALF_DEPTH
+		) - SITE_CLEARANCE
+	)
+	var site_max = Vector2(
+		BUILDING_CENTER.x + max(shell_half_width, SITE_APRON_HALF_WIDTH) + SITE_CLEARANCE,
+		max(
+			BUILDING_CENTER.z + shell_half_depth,
+			BUILDING_CENTER.z + SITE_APRON_LOCAL_CENTER_Z + SITE_APRON_HALF_DEPTH
+		) + SITE_CLEARANCE
+	)
+
+	# Collect before detaching anything: mutating a block while traversing its
+	# children used to leave neighbouring or nested facade nodes behind.
+	var structure_roots = []
+	_collect_existing_structure_roots(berlin_map, berlin_map, structure_roots)
+	var structures_to_remove = []
+	for structure_root in structure_roots:
+		if _node_geometry_overlaps_site(structure_root, site_min, site_max):
+			structures_to_remove.append(structure_root)
+	for structure_root in structures_to_remove:
+		_detach_site_node(structure_root)
+
+	# Trees and lamps inside the footprint would otherwise poke through the new
+	# building. Sidewalks, courtyards, road meshes, lane marks and ground stay.
+	var obstructions_to_remove = []
+	_collect_site_obstructions(berlin_map, site_min, site_max, obstructions_to_remove)
+	for obstruction in obstructions_to_remove:
+		_detach_site_node(obstruction)
+
+
+func _collect_existing_structure_roots(current: Node, berlin_map: Node, output: Array):
+	for child in current.get_children():
+		var child_name = String(child.name)
+		if child_name.begins_with("Building_"):
+			output.append(child)
+			continue
+		if current == berlin_map:
+			if child_name.begins_with("Block_"):
+				_collect_existing_structure_roots(child, berlin_map, output)
+			elif not _is_protected_map_surface(child_name) and not _is_site_obstruction_name(child_name):
+				# Top-level landmarks such as BrandenburgGate can also contain their
+				# collision and decorative geometry several levels down.
+				output.append(child)
+			continue
+		_collect_existing_structure_roots(child, berlin_map, output)
+
+
+func _is_protected_map_surface(node_name: String) -> bool:
+	return (
+		node_name == "Ground"
+		or node_name.begins_with("Road_")
+		or node_name.find("LaneMark") != -1
+		or node_name.find("Crosswalk") != -1
+	)
+
+
+func _is_site_obstruction_name(node_name: String) -> bool:
+	return node_name.find("StreetLamp") != -1 or node_name.find("Tree") != -1
+
+
+func _collect_site_obstructions(current: Node, site_min: Vector2, site_max: Vector2, output: Array):
+	for child in current.get_children():
+		var child_name = String(child.name)
+		if _is_site_obstruction_name(child_name):
+			if _node_geometry_overlaps_site(child, site_min, site_max):
+				output.append(child)
+			continue
+		_collect_site_obstructions(child, site_min, site_max, output)
+
+
+func _node_geometry_overlaps_site(node: Node, site_min: Vector2, site_max: Vector2) -> bool:
+	if node is MeshInstance and node.mesh != null:
+		if _transformed_aabb_overlaps_site(node.get_aabb(), node.global_transform, site_min, site_max):
+			return true
+	elif node is CollisionShape and node.shape is BoxShape:
+		var extents = node.shape.extents
+		var local_box = AABB(Vector3(-extents.x, -extents.y, -extents.z), extents * 2.0)
+		if _transformed_aabb_overlaps_site(local_box, node.global_transform, site_min, site_max):
+			return true
+	for child in node.get_children():
+		if _node_geometry_overlaps_site(child, site_min, site_max):
+			return true
+	return false
+
+
+func _transformed_aabb_overlaps_site(local_box: AABB, world_transform: Transform, site_min: Vector2, site_max: Vector2) -> bool:
+	var bounds_initialized = false
+	var world_min = Vector2()
+	var world_max = Vector2()
+	for x_side in range(2):
+		for y_side in range(2):
+			for z_side in range(2):
+				var local_point = local_box.position + Vector3(
+					local_box.size.x * float(x_side),
+					local_box.size.y * float(y_side),
+					local_box.size.z * float(z_side)
+				)
+				var world_point = world_transform.xform(local_point)
+				var point_2d = Vector2(world_point.x, world_point.z)
+				if not bounds_initialized:
+					world_min = point_2d
+					world_max = point_2d
+					bounds_initialized = true
+				else:
+					world_min.x = min(world_min.x, point_2d.x)
+					world_min.y = min(world_min.y, point_2d.y)
+					world_max.x = max(world_max.x, point_2d.x)
+					world_max.y = max(world_max.y, point_2d.y)
+	return (
+		world_max.x >= site_min.x
+		and world_min.x <= site_max.x
+		and world_max.y >= site_min.y
+		and world_min.y <= site_max.y
+	)
+
+
+func _detach_site_node(node: Node):
+	if not is_instance_valid(node):
+		return
+	var parent = node.get_parent()
+	if parent != null:
+		# Detach synchronously so build_bundestag() cannot share a rendered or
+		# colliding frame with the old geometry; free safely at frame end.
+		parent.remove_child(node)
+	node.queue_free()
+
+
 func build_bundestag():
 	var building = Spatial.new()
 	building.name = "BundestagMissionBuilding"
 	building.translation = BUILDING_CENTER
 	add_child(building)
 
-	add_static_box(building, "InteriorFloor", Vector3(0, 0.12, 0), Vector3(46, 0.24, 34), Color("b7b1a5"))
-	add_static_box(building, "FrontWallLeft", Vector3(-12.75, 3.6, -17), Vector3(20.5, 7.2, 0.65), Color("d7c7a7"))
-	add_static_box(building, "FrontWallRight", Vector3(12.75, 3.6, -17), Vector3(20.5, 7.2, 0.65), Color("d7c7a7"))
-	add_static_box(building, "RearWall", Vector3(0, 3.6, 17), Vector3(46, 7.2, 0.65), Color("cbb995"))
-	add_static_box(building, "EastWall", Vector3(23, 3.6, 0), Vector3(0.65, 7.2, 34), Color("d2c19d"))
-	add_static_box(building, "WestWallFront", Vector3(-23, 3.6, -9.75), Vector3(0.65, 7.2, 14.5), Color("d2c19d"))
-	add_static_box(building, "WestWallRear", Vector3(-23, 3.6, 9.75), Vector3(0.65, 7.2, 14.5), Color("d2c19d"))
-	add_visual_box(building, "Roof", Vector3(0, 7.25, 0), Vector3(47, 0.35, 35), Color("4e5558"))
+	var sandstone = Color("c9b58f")
+	var sandstone_light = Color("e0d0ae")
+	var sandstone_shadow = Color("a69170")
+	var roof_color = Color("4b5356")
 
-	# The central glass dome and flag make the destination readable from the road.
-	add_visual_cylinder(building, "DomeBase", Vector3(0, 7.65, 2.5), 5.2, 0.7, Color("59666b"))
-	var dome = add_visual_sphere(building, "GlassDome", Vector3(0, 9.2, 2.5), 4.1, Color(0.30, 0.52, 0.62, 0.82))
-	var dome_material = dome.mesh.material as SpatialMaterial
-	dome_material.flags_transparent = true
-	add_visual_cylinder(building, "FlagPole", Vector3(0, 14.0, 2.5), 0.10, 6.0, Color("30363a"))
-	add_visual_box(building, "GermanFlagBlack", Vector3(1.5, 15.8, 2.5), Vector3(3.0, 0.35, 0.06), Color("171717"))
-	add_visual_box(building, "GermanFlagRed", Vector3(1.5, 15.45, 2.5), Vector3(3.0, 0.35, 0.06), Color("c52b35"))
-	add_visual_box(building, "GermanFlagGold", Vector3(1.5, 15.10, 2.5), Vector3(3.0, 0.35, 0.06), Color("e4b43c"))
+	# The 138 x 98 metre shell and 24 metre roof line use one Godot unit per metre.
+	# A shallow apron masks the old road surface where the monumental stairs meet it.
+	add_static_box(
+		building,
+		"WestEntranceApron",
+		Vector3(0, 0.09, SITE_APRON_LOCAL_CENTER_Z),
+		Vector3(SITE_APRON_HALF_WIDTH * 2.0, 0.18, SITE_APRON_HALF_DEPTH * 2.0),
+		Color("aaa69d")
+	)
+	add_static_box(building, "InteriorFloor", Vector3(0, 0.12, 0), Vector3(BUILDING_LENGTH, 0.24, BUILDING_WIDTH), Color("b7b1a5"))
 
-	for column_x in [-10.0, -6.5, 6.5, 10.0]:
-		add_visual_cylinder(building, "FacadeColumn", Vector3(column_x, 3.15, -18.0), 0.48, 6.3, Color("e4d8c0"))
-	for stair_index in range(3):
-		var stair_width = 14.0 + float(stair_index) * 2.0
-		add_static_box(building, "EntranceStep%d" % stair_index, Vector3(0, 0.10 + stair_index * 0.10, -19.2 + stair_index * 0.65), Vector3(stair_width, 0.20 + stair_index * 0.20, 1.3), Color("aaa398"))
+	# Exterior collision shell. Gaps are retained for the public west portal and
+	# the crate-operated service passage on the north-west side.
+	add_static_box(building, "FrontWallLeft", Vector3(-37.5, 12.0, -49.0), Vector3(63.0, 24.0, 1.2), sandstone)
+	add_static_box(building, "FrontWallRight", Vector3(37.5, 12.0, -49.0), Vector3(63.0, 24.0, 1.2), sandstone)
+	add_static_box(building, "FrontWallAboveDoor", Vector3(0, 15.8, -49.0), Vector3(12.0, 16.4, 1.2), sandstone)
+	add_static_box(building, "RearWall", Vector3(0, 12.0, 49.0), Vector3(138.0, 24.0, 1.2), sandstone)
+	add_static_box(building, "EastWall", Vector3(69.0, 12.0, 0), Vector3(1.2, 24.0, 98.0), sandstone)
+	add_static_box(building, "WestWallFront", Vector3(-69.0, 12.0, -26.0), Vector3(1.2, 24.0, 46.0), sandstone)
+	add_static_box(building, "WestWallRear", Vector3(-69.0, 12.0, 26.0), Vector3(1.2, 24.0, 46.0), sandstone)
+	add_static_box(building, "WestWallAboveServiceDoor", Vector3(-69.0, 14.25, 0), Vector3(1.2, 19.5, 6.0), sandstone)
+	add_visual_box(building, "RoofTerrace", Vector3(0, 24.2, 0), Vector3(140.0, 0.4, 100.0), roof_color)
 
-	front_door = add_static_box(building, "SecureMainDoor", Vector3(0, 2.5, -17.15), Vector3(4.8, 5.0, 0.45), Color("264654"))
-	hidden_door = add_static_box(building, "ConcealedServiceDoor", Vector3(-23.15, 2.25, 0), Vector3(0.45, 4.5, 4.8), Color("7b756c"))
-	add_visual_box(building, "ServiceDoorSeam", Vector3(-23.40, 2.25, 0), Vector3(0.03, 4.65, 4.95), Color("3b3a38"))
+	build_corner_towers(building, sandstone, sandstone_light)
+	build_facade_cornices(building, sandstone_shadow, sandstone_light)
+	build_facade_windows(building)
+	build_west_portico(building, sandstone_light, sandstone_shadow)
+	build_reichstag_dome(building)
 
-	# Interior delivery desk, archive stacks, lighting, and the short service corridor.
-	add_static_box(building, "DeliveryDesk", Vector3(0, 0.75, 9.5), Vector3(6.5, 1.5, 1.4), Color("584331"))
-	add_visual_box(building, "DeskGlass", Vector3(0, 1.7, 9.75), Vector3(6.0, 0.75, 0.08), Color(0.28, 0.55, 0.65, 0.62))
-	for shelf_z in [4.0, 8.0, 12.0]:
-		add_static_box(building, "ArchiveShelf", Vector3(-17.5, 1.25, shelf_z), Vector3(2.0, 2.5, 2.8), Color("4c3b2d"))
-	add_visual_box(building, "ServiceTunnelCeiling", Vector3(-20.0, 4.6, 0), Vector3(6.0, 0.25, 5.0), Color("4d5050"))
-	for tunnel_z in [-2.35, 2.35]:
-		add_visual_box(building, "TunnelRail", Vector3(-20.0, 2.2, tunnel_z), Vector3(6.0, 0.18, 0.18), Color("8f8d82"))
+	front_door = add_static_box(building, "SecureMainDoor", Vector3(0, 4.8, -49.2), Vector3(10.0, 5.6, 0.65), Color("264654"))
+	hidden_door = add_static_box(building, "ConcealedServiceDoor", Vector3(-69.2, 2.25, 0), Vector3(0.65, 4.5, 5.8), Color("7b756c"))
+	add_visual_box(building, "ServiceDoorSeam", Vector3(-69.56, 2.25, 0), Vector3(0.03, 4.65, 5.95), Color("3b3a38"))
 
-	var interior_light = OmniLight.new()
-	interior_light.name = "InteriorLight"
-	interior_light.translation = Vector3(0, 5.8, 3.0)
-	interior_light.light_color = Color("fff1cf")
-	interior_light.light_energy = 1.3
-	interior_light.omni_range = 30.0
-	building.add_child(interior_light)
+	# The mission interior remains intentionally compact inside the full shell:
+	# delivery desk, archive stacks and service tunnel keep their original roles.
+	add_static_box(building, "DeliveryDesk", Vector3(0, 0.75, -15.0), Vector3(10.0, 1.5, 1.8), Color("584331"))
+	var desk_glass = add_visual_box(building, "DeskGlass", Vector3(0, 1.75, -15.35), Vector3(9.4, 0.85, 0.10), Color(0.28, 0.55, 0.65, 0.62))
+	var desk_glass_material = desk_glass.mesh.material as SpatialMaterial
+	desk_glass_material.flags_transparent = true
+	for shelf_z in [12.0, 22.0, 32.0]:
+		add_static_box(building, "ArchiveShelf", Vector3(-51.0, 1.5, shelf_z), Vector3(3.0, 3.0, 6.0), Color("4c3b2d"))
+	add_visual_box(building, "ServiceTunnelCeiling", Vector3(-64.0, 4.75, 0), Vector3(10.0, 0.25, 7.0), Color("4d5050"))
+	for tunnel_z in [-3.35, 3.35]:
+		add_visual_box(building, "TunnelRail", Vector3(-64.0, 2.2, tunnel_z), Vector3(10.0, 0.18, 0.18), Color("8f8d82"))
+
+	for light_position in [Vector3(0, 10.0, -20.0), Vector3(-35.0, 10.0, 18.0), Vector3(35.0, 10.0, 18.0), Vector3(-62.0, 4.0, 0)]:
+		var interior_light = OmniLight.new()
+		interior_light.name = "InteriorLight"
+		interior_light.translation = light_position
+		interior_light.light_color = Color("fff1cf")
+		interior_light.light_energy = 1.15
+		interior_light.omni_range = 42.0
+		building.add_child(interior_light)
+
+
+func build_corner_towers(building: Spatial, sandstone: Color, trim_color: Color):
+	var tower_positions = [
+		Vector3(-56.0, 12.0, -36.5),
+		Vector3(-56.0, 12.0, 36.5),
+		Vector3(56.0, 12.0, -36.5),
+		Vector3(56.0, 12.0, 36.5),
+	]
+	for tower_index in range(tower_positions.size()):
+		var tower_position = tower_positions[tower_index]
+		add_visual_box(building, "CornerTower%02d" % tower_index, tower_position, Vector3(26.0, 24.0, 25.0), sandstone)
+		add_visual_box(building, "CornerTowerCornice%02d" % tower_index, Vector3(tower_position.x, 23.25, tower_position.z), Vector3(28.0, 1.25, 27.0), trim_color)
+		add_visual_box(building, "CornerTowerParapet%02d" % tower_index, Vector3(tower_position.x, 24.45, tower_position.z), Vector3(26.5, 1.15, 25.5), sandstone)
+		add_tower_flag(building, "TowerFlag%02d" % tower_index, Vector3(tower_position.x, 25.0, tower_position.z), tower_index == 2)
+
+
+func add_tower_flag(parent: Node, prefix: String, base_position: Vector3, european: bool):
+	add_visual_cylinder(parent, prefix + "Pole", base_position + Vector3(0, 5.0, 0), 0.12, 10.0, Color("343a3d"))
+	if european:
+		add_visual_box(parent, prefix + "EuropeBlue", base_position + Vector3(2.5, 8.0, 0), Vector3(5.0, 2.6, 0.10), Color("17458f"))
+		for star_index in range(8):
+			var angle = float(star_index) / 8.0 * PI * 2.0
+			add_visual_sphere(parent, prefix + "Star%02d" % star_index, base_position + Vector3(2.5 + cos(angle) * 0.72, 8.0 + sin(angle) * 0.72, -0.08), 0.10, Color("f2d34f"))
+	else:
+		add_visual_box(parent, prefix + "Black", base_position + Vector3(2.5, 8.55, 0), Vector3(5.0, 0.55, 0.10), Color("171717"))
+		add_visual_box(parent, prefix + "Red", base_position + Vector3(2.5, 8.0, 0), Vector3(5.0, 0.55, 0.10), Color("c52b35"))
+		add_visual_box(parent, prefix + "Gold", base_position + Vector3(2.5, 7.45, 0), Vector3(5.0, 0.55, 0.10), Color("e4b43c"))
+
+
+func build_facade_cornices(building: Spatial, shadow_color: Color, light_color: Color):
+	for band_y in [1.15, 8.1, 15.4, 23.15]:
+		var band_height = 1.0 if band_y == 1.15 or band_y == 23.15 else 0.55
+		var band_color = light_color if band_y >= 15.0 else shadow_color
+		add_visual_box(building, "FrontCornice", Vector3(0, band_y, -49.68), Vector3(140.0, band_height, 0.32), band_color)
+		add_visual_box(building, "RearCornice", Vector3(0, band_y, 49.68), Vector3(140.0, band_height, 0.32), band_color)
+		add_visual_box(building, "EastCornice", Vector3(69.68, band_y, 0), Vector3(0.32, band_height, 100.0), band_color)
+		add_visual_box(building, "WestCornice", Vector3(-69.68, band_y, 0), Vector3(0.32, band_height, 100.0), band_color)
+
+
+func build_facade_windows(building: Spatial):
+	var glass_color = Color("304b5c")
+	var frame_color = Color("8f8068")
+	var facade_x_positions = [-60.0, -50.0, -40.0, -30.0, -20.0, -10.0, 0.0, 10.0, 20.0, 30.0, 40.0, 50.0, 60.0]
+	var facade_z_positions = [-38.0, -28.0, -18.0, -8.0, 8.0, 18.0, 28.0, 38.0]
+	var row_heights = [4.7, 11.6, 18.4]
+	var window_index = 0
+	for row_y in row_heights:
+		for window_x in facade_x_positions:
+			if abs(window_x) >= 17.0:
+				add_visual_box(building, "FrontWindow%03d" % window_index, Vector3(window_x, row_y, -49.86), Vector3(4.8, 4.7, 0.12), glass_color)
+				add_visual_box(building, "FrontLintel%03d" % window_index, Vector3(window_x, row_y + 2.5, -49.96), Vector3(5.5, 0.28, 0.18), frame_color)
+			add_visual_box(building, "RearWindow%03d" % window_index, Vector3(window_x, row_y, 49.86), Vector3(4.8, 4.7, 0.12), glass_color)
+			add_visual_box(building, "RearLintel%03d" % window_index, Vector3(window_x, row_y + 2.5, 49.96), Vector3(5.5, 0.28, 0.18), frame_color)
+			window_index += 1
+		for window_z in facade_z_positions:
+			add_visual_box(building, "EastWindow%03d" % window_index, Vector3(69.86, row_y, window_z), Vector3(0.12, 4.7, 4.8), glass_color)
+			add_visual_box(building, "EastLintel%03d" % window_index, Vector3(69.96, row_y + 2.5, window_z), Vector3(0.18, 0.28, 5.5), frame_color)
+			add_visual_box(building, "WestWindow%03d" % window_index, Vector3(-69.86, row_y, window_z), Vector3(0.12, 4.7, 4.8), glass_color)
+			add_visual_box(building, "WestLintel%03d" % window_index, Vector3(-69.96, row_y + 2.5, window_z), Vector3(0.18, 0.28, 5.5), frame_color)
+			window_index += 1
+
+
+func build_west_portico(building: Spatial, stone_color: Color, shadow_color: Color):
+	for stair_index in range(8):
+		var step_height = 0.25 * float(stair_index + 1)
+		var step_z = -57.5 + float(stair_index) * 1.1
+		add_visual_box(building, "EntranceStep%d" % stair_index, Vector3(0, step_height * 0.5, step_z), Vector3(44.0, step_height, 1.25), Color("aaa398"))
+	# A hidden shallow ramp under the visible risers makes the monumental stair
+	# reliably walkable with the existing KinematicBody controller.
+	var stair_ramp = StaticBody.new()
+	stair_ramp.name = "EntranceStairRamp"
+	stair_ramp.translation = Vector3(0, 1.05, -53.65)
+	stair_ramp.rotation_degrees.x = -12.8
+	var ramp_collision = CollisionShape.new()
+	var ramp_shape = BoxShape.new()
+	ramp_shape.extents = Vector3(20.5, 0.12, 4.85)
+	ramp_collision.shape = ramp_shape
+	stair_ramp.add_child(ramp_collision)
+	building.add_child(stair_ramp)
+	add_static_box(building, "StairCheekLeft", Vector3(-23.0, 1.2, -53.6), Vector3(2.0, 2.4, 10.0), shadow_color)
+	add_static_box(building, "StairCheekRight", Vector3(23.0, 1.2, -53.6), Vector3(2.0, 2.4, 10.0), shadow_color)
+
+	var column_positions = [-13.5, -8.1, -2.7, 2.7, 8.1, 13.5]
+	for column_index in range(column_positions.size()):
+		var column_x = column_positions[column_index]
+		add_visual_box(building, "ColumnBase%02d" % column_index, Vector3(column_x, 2.25, -52.0), Vector3(2.8, 0.5, 2.8), shadow_color)
+		add_visual_cylinder(building, "FacadeColumn%02d" % column_index, Vector3(column_x, 8.0, -52.0), 1.1, 11.5, stone_color)
+		add_visual_box(building, "ColumnCapital%02d" % column_index, Vector3(column_x, 13.75, -52.0), Vector3(2.9, 0.55, 2.9), stone_color)
+
+	add_visual_box(building, "PorticoEntablature", Vector3(0, 14.55, -51.5), Vector3(38.0, 1.8, 5.0), stone_color)
+	add_visual_triangular_prism(building, "WestPediment", Vector3(0, 15.45, -51.5), 38.0, 6.0, 4.6, stone_color)
+	add_visual_box(building, "InscriptionPanel", Vector3(0, 14.65, -54.08), Vector3(22.0, 1.3, 0.16), Color("d7c8a7"))
+	var inscription = Label3D.new()
+	inscription.name = "DemDeutschenVolkeInscription"
+	inscription.text = "DEM DEUTSCHEN VOLKE"
+	inscription.translation = Vector3(0, 14.62, -54.19)
+	inscription.rotation_degrees.y = 180.0
+	inscription.pixel_size = 0.04
+	inscription.modulate = Color("3c3428")
+	building.add_child(inscription)
+
+	# Simplified heraldic relief plaques make the portal readable at driving range.
+	for relief_x in [-20.5, 20.5]:
+		add_visual_box(building, "HeraldicRelief", Vector3(relief_x, 10.0, -49.72), Vector3(6.0, 8.0, 0.28), Color("b7a37e"))
+		add_visual_sphere(building, "ReliefMedallion", Vector3(relief_x, 11.1, -49.92), 1.35, stone_color)
+
+
+func add_visual_triangular_prism(parent: Node, node_name: String, position: Vector3, width: float, height: float, depth: float, color: Color) -> MeshInstance:
+	var half_width = width * 0.5
+	var half_depth = depth * 0.5
+	var front_left = Vector3(-half_width, 0, -half_depth)
+	var front_right = Vector3(half_width, 0, -half_depth)
+	var front_top = Vector3(0, height, -half_depth)
+	var rear_left = Vector3(-half_width, 0, half_depth)
+	var rear_right = Vector3(half_width, 0, half_depth)
+	var rear_top = Vector3(0, height, half_depth)
+	var surface = SurfaceTool.new()
+	surface.begin(Mesh.PRIMITIVE_TRIANGLES)
+	_add_surface_triangle(surface, front_left, front_right, front_top)
+	_add_surface_triangle(surface, rear_right, rear_left, rear_top)
+	_add_surface_quad(surface, front_left, rear_left, rear_right, front_right)
+	_add_surface_quad(surface, front_left, front_top, rear_top, rear_left)
+	_add_surface_quad(surface, front_top, front_right, rear_right, rear_top)
+	surface.generate_normals()
+	var prism_mesh = surface.commit()
+	var prism_material = make_material(color)
+	prism_material.params_cull_mode = SpatialMaterial.CULL_DISABLED
+	prism_mesh.surface_set_material(0, prism_material)
+	var mesh_instance = MeshInstance.new()
+	mesh_instance.name = node_name
+	mesh_instance.translation = position
+	mesh_instance.mesh = prism_mesh
+	parent.add_child(mesh_instance)
+	return mesh_instance
+
+
+func build_reichstag_dome(building: Spatial):
+	add_visual_cylinder(building, "DomeBase", Vector3(0, 24.25, 0), 20.6, 0.8, Color("505b60"))
+
+	var glass_surface = SurfaceTool.new()
+	glass_surface.begin(Mesh.PRIMITIVE_TRIANGLES)
+	for ring_index in range(DOME_RING_COUNT - 1):
+		var lower_profile = dome_profile(ring_index)
+		var upper_profile = dome_profile(ring_index + 1)
+		for segment_index in range(DOME_RIB_COUNT):
+			var angle_a = float(segment_index) / float(DOME_RIB_COUNT) * PI * 2.0
+			var angle_b = float(segment_index + 1) / float(DOME_RIB_COUNT) * PI * 2.0
+			var lower_a = dome_point(lower_profile.x, lower_profile.y, angle_a)
+			var lower_b = dome_point(lower_profile.x, lower_profile.y, angle_b)
+			var upper_a = dome_point(upper_profile.x, upper_profile.y, angle_a)
+			var upper_b = dome_point(upper_profile.x, upper_profile.y, angle_b)
+			_add_surface_quad(glass_surface, lower_a, lower_b, upper_b, upper_a)
+	glass_surface.generate_normals()
+	var glass_mesh = glass_surface.commit()
+	var glass_material = make_material(Color(0.24, 0.50, 0.64, 0.34))
+	glass_material.flags_transparent = true
+	glass_material.flags_unshaded = true
+	glass_material.params_cull_mode = SpatialMaterial.CULL_DISABLED
+	glass_material.roughness = 0.18
+	glass_mesh.surface_set_material(0, glass_material)
+	var glass_dome = MeshInstance.new()
+	glass_dome.name = "GlassDome"
+	glass_dome.mesh = glass_mesh
+	building.add_child(glass_dome)
+
+	# The steel is consolidated into one mesh: 24 curved ribs and 17 rings without
+	# hundreds of individual nodes.
+	var steel_surface = SurfaceTool.new()
+	steel_surface.begin(Mesh.PRIMITIVE_TRIANGLES)
+	for rib_index in range(DOME_RIB_COUNT):
+		var rib_angle = float(rib_index) / float(DOME_RIB_COUNT) * PI * 2.0
+		for ring_index in range(DOME_RING_COUNT - 1):
+			var lower_profile = dome_profile(ring_index)
+			var upper_profile = dome_profile(ring_index + 1)
+			var lower_half_angle = 0.11 / max(4.0, lower_profile.x)
+			var upper_half_angle = 0.11 / max(4.0, upper_profile.x)
+			var lower_left = dome_point(lower_profile.x + 0.08, lower_profile.y, rib_angle - lower_half_angle)
+			var lower_right = dome_point(lower_profile.x + 0.08, lower_profile.y, rib_angle + lower_half_angle)
+			var upper_left = dome_point(upper_profile.x + 0.08, upper_profile.y, rib_angle - upper_half_angle)
+			var upper_right = dome_point(upper_profile.x + 0.08, upper_profile.y, rib_angle + upper_half_angle)
+			_add_surface_quad(steel_surface, lower_left, lower_right, upper_right, upper_left)
+	for ring_index in range(DOME_RING_COUNT):
+		var profile = dome_profile(ring_index)
+		for segment_index in range(DOME_RIB_COUNT):
+			var angle_a = float(segment_index) / float(DOME_RIB_COUNT) * PI * 2.0
+			var angle_b = float(segment_index + 1) / float(DOME_RIB_COUNT) * PI * 2.0
+			var lower_a = dome_point(profile.x + 0.10, profile.y - 0.10, angle_a)
+			var lower_b = dome_point(profile.x + 0.10, profile.y - 0.10, angle_b)
+			var upper_a = dome_point(profile.x + 0.10, profile.y + 0.10, angle_a)
+			var upper_b = dome_point(profile.x + 0.10, profile.y + 0.10, angle_b)
+			_add_surface_quad(steel_surface, lower_a, lower_b, upper_b, upper_a)
+	steel_surface.generate_normals()
+	var steel_mesh = steel_surface.commit()
+	var steel_material = make_material(Color("7b8589"))
+	steel_material.metallic = 0.75
+	steel_material.roughness = 0.28
+	steel_material.params_cull_mode = SpatialMaterial.CULL_DISABLED
+	steel_mesh.surface_set_material(0, steel_material)
+	var dome_steel = MeshInstance.new()
+	dome_steel.name = "DomeRibsAndRings"
+	dome_steel.mesh = steel_mesh
+	building.add_child(dome_steel)
+
+	var mirror_cone = add_visual_frustum(building, "MirrorLightFunnel", Vector3(0, 34.25, 0), 3.2, 8.5, 19.0, Color("c5d0d2"))
+	var mirror_material = mirror_cone.mesh.material as SpatialMaterial
+	mirror_material.metallic = 0.92
+	mirror_material.roughness = 0.10
+
+	var dome_light = OmniLight.new()
+	dome_light.name = "DomeNightBeacon"
+	dome_light.translation = Vector3(0, 36.0, 0)
+	dome_light.light_color = Color("d9eef5")
+	dome_light.light_energy = 1.1
+	dome_light.omni_range = 36.0
+	building.add_child(dome_light)
+
+
+func dome_profile(ring_index: int) -> Vector2:
+	var amount = float(ring_index) / float(DOME_RING_COUNT - 1)
+	var maximum_angle = acos(DOME_OPENING_RADIUS / DOME_RADIUS)
+	var profile_angle = maximum_angle * amount
+	var normalized_height = sin(profile_angle) / sin(maximum_angle)
+	return Vector2(DOME_RADIUS * cos(profile_angle), BUILDING_HEIGHT + DOME_HEIGHT * normalized_height)
+
+
+func dome_point(radius: float, height: float, angle: float) -> Vector3:
+	return Vector3(cos(angle) * radius, height, sin(angle) * radius)
+
+
+func _add_surface_triangle(surface: SurfaceTool, a: Vector3, b: Vector3, c: Vector3):
+	surface.add_vertex(a)
+	surface.add_vertex(b)
+	surface.add_vertex(c)
+
+
+func _add_surface_quad(surface: SurfaceTool, a: Vector3, b: Vector3, c: Vector3, d: Vector3):
+	_add_surface_triangle(surface, a, b, c)
+	_add_surface_triangle(surface, a, c, d)
 
 
 func build_mission_characters():
@@ -249,8 +674,8 @@ func build_push_crate():
 	collision.shape = shape
 	push_crate.add_child(collision)
 	# Scrape marks draw attention to the otherwise inconspicuous service wall.
-	for mark_z in [-54.0, -52.0, -50.0]:
-		add_visual_box(self, "ScrapeMark", Vector3(-244.0, 0.025, mark_z), Vector3(5.0, 0.035, 0.12), Color("77746c"))
+	for mark_z in [-42.0, -40.0, -38.0]:
+		add_visual_box(self, "ScrapeMark", Vector3(-207.0, 0.025, mark_z), Vector3(5.0, 0.035, 0.12), Color("77746c"))
 
 
 func build_waypoint():
@@ -462,7 +887,7 @@ func horizontal_distance(a: Vector3, b: Vector3) -> float:
 
 func is_player_inside() -> bool:
 	var position = game.player.global_transform.origin
-	return position.x > BUILDING_CENTER.x - 22.4 and position.x < BUILDING_CENTER.x + 22.4 and position.z > BUILDING_CENTER.z - 16.6 and position.z < BUILDING_CENTER.z + 16.6
+	return position.x > BUILDING_CENTER.x - 68.4 and position.x < BUILDING_CENTER.x + 68.4 and position.z > BUILDING_CENTER.z - 48.4 and position.z < BUILDING_CENTER.z + 48.4
 
 
 func update_briefcase_visibility():
