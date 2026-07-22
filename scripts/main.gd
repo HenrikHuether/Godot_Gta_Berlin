@@ -3,12 +3,21 @@ extends Spatial
 const BERLIN_MAP_SCENE = preload("res://scenes/BerlinMap.tscn")
 const HUMAN_SCENE = preload("res://Assets/HumanV2.glb")
 const GOLF_SCENE = preload("res://Assets/Golf7ModelV3.glb")
+const HLF_SCENE = preload("res://Assets/Vehicles/Feuerwehr_HLF.glb")
 const MISSION_ONE_SCRIPT = preload("res://scripts/mission_one.gd")
 const MAP_EXPANSION_SCRIPT = preload("res://scripts/map_expansion.gd")
 const GOLF_VISUAL_SCALE = 0.65
 const GOLF_VISUAL_OFFSET = Vector3(0.0, -0.52, 0.0)
 const GOLF_COLLIDER_EXTENTS = Vector3(1.06, 0.72, 2.14)
 const GOLF_GROUND_HEIGHT = 0.72
+const HLF_VISUAL_OFFSET = Vector3(0.0, -0.62, -2.654151)
+const HLF_COLLIDER_EXTENTS = Vector3(1.15, 1.25, 3.70)
+const HLF_COLLIDER_OFFSET = Vector3(0.0, 0.68, 0.0)
+const HLF_FRONT_LIGHT_POSITION = Vector3(0.0113, 2.6606, 0.7325)
+const HLF_REAR_LIGHT_LEFT_POSITION = Vector3(-0.7865, 2.7684, -5.3798)
+const HLF_REAR_LIGHT_RIGHT_POSITION = Vector3(0.7836, 2.7684, -5.3798)
+const HLF_BLUE_EMISSION_ENERGY = 5.5
+const HLF_BLUE_LIGHT_ENERGY = 2.4
 const WALK_SPEED = 8.0
 const DRIVE_SPEED = 22.0
 const GRAVITY = 24.0
@@ -104,13 +113,15 @@ func _ready():
 
 func build_audio():
 	# Procedural samples keep the prototype self-contained while still providing
-	# distinct gunshots, launch, explosion and looping vehicle-fire sounds.
+	# distinct gunshots, launch, explosion, vehicle and emergency sounds.
 	sound_streams["pistol"] = create_sound_sample("pistol", 0.16)
 	sound_streams["rifle"] = create_sound_sample("rifle", 0.11)
 	sound_streams["police_pistol"] = create_sound_sample("police_pistol", 0.14)
 	sound_streams["rocket"] = create_sound_sample("rocket", 0.34)
 	sound_streams["explosion"] = create_sound_sample("explosion", 0.95)
 	sound_streams["fire"] = create_sound_sample("fire", 1.20, true)
+	sound_streams["fire_engine"] = create_sound_sample("fire_engine", 1.0, true)
+	sound_streams["martinshorn"] = create_sound_sample("martinshorn", 2.4, true)
 
 func create_sound_sample(kind: String, duration: float, looping := false) -> AudioStreamSample:
 	var mix_rate = 22050
@@ -133,10 +144,39 @@ func create_sound_sample(kind: String, duration: float, looping := false) -> Aud
 			wave = (noise * 0.46 + sin(time * PI * 2.0 * (180.0 - progress * 125.0)) * 0.52) * (1.0 - progress)
 		elif kind == "explosion":
 			wave = (noise * 0.62 + sin(time * PI * 2.0 * 43.0) * 0.58 + sin(time * PI * 2.0 * 67.0) * 0.24) * pow(1.0 - progress, 1.7)
-		else:
+		elif kind == "fire":
 			var crackle = 1.0 if noise > 0.72 else noise * 0.28
 			var loop_fade = min(1.0, min(progress * 18.0, (1.0 - progress) * 18.0))
 			wave = (crackle * 0.55 + sin(time * PI * 2.0 * 74.0) * 0.10) * loop_fade
+		elif kind == "fire_engine":
+			# Integer harmonics and modulation cycles make this a seamless diesel loop.
+			var engine_pulse = 0.78 + sin(time * PI * 2.0 * 4.0) * 0.12
+			wave = (
+				sin(time * PI * 2.0 * 48.0) * 0.36
+				+ sin(time * PI * 2.0 * 96.0 + 0.42) * 0.20
+				+ sin(time * PI * 2.0 * 144.0 + 0.18) * 0.11
+				+ sin(time * PI * 2.0 * 240.0) * 0.045
+			) * engine_pulse
+		elif kind == "martinshorn":
+			# German emergency horn interval: 435 Hz and 580 Hz, alternating every 0.6 s.
+			# Equal plateaus and narrow smooth crossfades prevent clicks at both changes
+			# and let the first audible cycle start with the full cadence.
+			var horn_cycle = fmod(time, 1.2)
+			var high_mix = 0.0
+			var horn_transition = 0.0
+			if horn_cycle >= 0.54 and horn_cycle < 0.60:
+				horn_transition = (horn_cycle - 0.54) / 0.06
+				high_mix = horn_transition * horn_transition * (3.0 - 2.0 * horn_transition)
+			elif horn_cycle >= 0.60 and horn_cycle < 1.14:
+				high_mix = 1.0
+			elif horn_cycle >= 1.14:
+				horn_transition = (horn_cycle - 1.14) / 0.06
+				high_mix = 1.0 - horn_transition * horn_transition * (3.0 - 2.0 * horn_transition)
+			var low_horn = sin(time * PI * 2.0 * 435.0) * 0.40 + sin(time * PI * 2.0 * 870.0) * 0.10
+			var high_horn = sin(time * PI * 2.0 * 580.0) * 0.40 + sin(time * PI * 2.0 * 1160.0) * 0.10
+			wave = lerp(low_horn, high_horn, high_mix)
+		else:
+			wave = 0.0
 		var value = int(clamp(wave, -1.0, 1.0) * 32767.0)
 		bytes[frame * 2] = value & 0xff
 		bytes[frame * 2 + 1] = (value >> 8) & 0xff
@@ -385,6 +425,132 @@ func add_golf_collision(vehicle: KinematicBody) -> CollisionShape:
 	collider.shape = shape
 	vehicle.add_child(collider)
 	return collider
+
+func add_hlf_visual(parent: Node) -> Spatial:
+	# The supplied HLF is already authored in metres, but its front points toward
+	# +Z and its pivot sits near the front axle. Centre it and match Godot's -Z
+	# vehicle-forward convention without modifying the source asset.
+	var visual = Spatial.new()
+	visual.name = "HLFVisual"
+	visual.translation = HLF_VISUAL_OFFSET
+	visual.rotation_degrees.y = 180.0
+	parent.add_child(visual)
+	var model = HLF_SCENE.instance()
+	model.name = "HLFModel"
+	visual.add_child(model)
+	configure_hlf_blue_light(model, "Blaulicht_Vorne")
+	configure_hlf_blue_light(model, "Blaulicht_Hinten")
+	add_hlf_flash_light(model, "BlueFlashLightFront", HLF_FRONT_LIGHT_POSITION, HLF_BLUE_LIGHT_ENERGY)
+	add_hlf_flash_light(model, "BlueFlashLightRearLeft", HLF_REAR_LIGHT_LEFT_POSITION, HLF_BLUE_LIGHT_ENERGY * 0.72)
+	add_hlf_flash_light(model, "BlueFlashLightRearRight", HLF_REAR_LIGHT_RIGHT_POSITION, HLF_BLUE_LIGHT_ENERGY * 0.72)
+	return visual
+
+func configure_hlf_blue_light(model: Node, mesh_name: String):
+	var light_mesh = model.find_node(mesh_name, true, false)
+	if not (light_mesh is MeshInstance) or not light_mesh.mesh:
+		return null
+	var blue_surface = -1
+	for surface_index in range(light_mesh.mesh.get_surface_count()):
+		var source_material = light_mesh.mesh.surface_get_material(surface_index)
+		var material_name = source_material.resource_name if source_material else ""
+		if material_name.to_lower().find("blaulicht") >= 0:
+			blue_surface = surface_index
+			break
+	# Both designated HLF beacon meshes use their first surface for blue glass.
+	# The fallback also keeps the setup robust if the importer drops material names.
+	if blue_surface < 0 and light_mesh.mesh.get_surface_count() > 0:
+		blue_surface = 0
+	if blue_surface < 0:
+		return null
+	var light_material = SpatialMaterial.new()
+	light_material.resource_name = "%s_Emission" % mesh_name
+	light_material.albedo_color = Color("0a35b8")
+	light_material.roughness = 0.16
+	light_material.emission_enabled = true
+	light_material.emission = Color("126dff")
+	light_material.emission_energy = 0.05
+	light_mesh.set_surface_material(blue_surface, light_material)
+	light_mesh.set_meta("blue_light_surface", blue_surface)
+	light_mesh.set_meta("blue_light_material", light_material)
+
+	return light_mesh
+
+func add_hlf_flash_light(model: Node, light_name: String, light_position: Vector3, energy: float):
+	# Model-level placement uses the actual optical centres. The rear beacon mesh
+	# contains two separate lenses, so each receives its own synchronized light.
+	var flash_light = OmniLight.new()
+	flash_light.name = light_name
+	flash_light.translation = light_position
+	flash_light.light_color = Color("176dff")
+	flash_light.light_energy = energy
+	flash_light.omni_range = 9.5
+	flash_light.shadow_enabled = false
+	flash_light.visible = false
+	model.add_child(flash_light)
+	return flash_light
+
+func add_hlf_collision(vehicle: KinematicBody) -> CollisionShape:
+	var collider = CollisionShape.new()
+	collider.name = "CollisionShape"
+	var shape = BoxShape.new()
+	shape.extents = HLF_COLLIDER_EXTENTS
+	collider.shape = shape
+	collider.translation = HLF_COLLIDER_OFFSET
+	vehicle.add_child(collider)
+	return collider
+
+func set_hlf_blue_lights(vehicle: Node, front_on: bool, rear_on: bool):
+	var model = vehicle.get_node_or_null("HLFVisual/HLFModel")
+	if not model:
+		return
+	set_hlf_blue_light(model.find_node("Blaulicht_Vorne", true, false), front_on)
+	set_hlf_blue_light(model.find_node("Blaulicht_Hinten", true, false), rear_on)
+	set_hlf_flash_light(model.get_node_or_null("BlueFlashLightFront"), front_on)
+	set_hlf_flash_light(model.get_node_or_null("BlueFlashLightRearLeft"), rear_on)
+	set_hlf_flash_light(model.get_node_or_null("BlueFlashLightRearRight"), rear_on)
+
+func set_hlf_blue_light(light_mesh, enabled: bool):
+	if not (light_mesh is MeshInstance) or not light_mesh.has_meta("blue_light_material"):
+		return
+	var light_material = light_mesh.get_meta("blue_light_material")
+	if light_material is SpatialMaterial:
+		light_material.albedo_color = Color("238dff") if enabled else Color("0a35b8")
+		light_material.emission = Color("36a4ff") if enabled else Color("0b2b72")
+		light_material.emission_energy = HLF_BLUE_EMISSION_ENERGY if enabled else 0.05
+
+func set_hlf_flash_light(flash_light, enabled: bool):
+	if flash_light is OmniLight:
+		flash_light.visible = enabled
+
+func add_fire_engine_audio(vehicle: Node):
+	# Generate the loops lazily too, so the factory remains safe in preview and
+	# isolated test scenes that do not call the main build sequence first.
+	if not sound_streams.has("fire_engine"):
+		sound_streams["fire_engine"] = create_sound_sample("fire_engine", 1.0, true)
+	if not sound_streams.has("martinshorn"):
+		sound_streams["martinshorn"] = create_sound_sample("martinshorn", 2.4, true)
+	var audio_setup = [
+		["EngineAudio", "fire_engine", -8.0, 105.0, 1.08, 7.0],
+		["MartinshornAudio", "martinshorn", -3.0, 230.0, 1.0, 24.0]
+	]
+	for setup in audio_setup:
+		var audio = AudioStreamPlayer3D.new()
+		audio.name = setup[0]
+		audio.stream = sound_streams[setup[1]]
+		audio.unit_db = float(setup[2])
+		audio.max_distance = float(setup[3])
+		audio.pitch_scale = float(setup[4])
+		audio.unit_size = float(setup[5])
+		audio.out_of_range_mode = AudioStreamPlayer3D.OUT_OF_RANGE_PAUSE
+		audio.autoplay = true
+		vehicle.add_child(audio)
+		audio.play()
+
+func stop_fire_engine_audio(vehicle: Node):
+	for audio_name in ["EngineAudio", "MartinshornAudio"]:
+		var audio = vehicle.get_node_or_null(audio_name)
+		if audio is AudioStreamPlayer3D:
+			audio.stop()
 
 func add_police_golf_livery(vehicle: KinematicBody):
 	add_box(vehicle, "LightbarBase", Vector3(0, 0.76, 0), Vector3(1.14, 0.08, 0.30), Color("222a31"), false)
@@ -908,6 +1074,9 @@ func destroy_vehicle(vehicle, create_blast := true):
 		return
 	vehicle.set_meta("destroyed", true)
 	vehicle.set_meta("health", 0)
+	if vehicle.has_meta("vehicle_kind") and str(vehicle.get_meta("vehicle_kind")) == "fire_vehicle":
+		set_hlf_blue_lights(vehicle, false, false)
+		stop_fire_engine_audio(vehicle)
 	destroyed_vehicles.append(vehicle)
 	var wreck_position = vehicle.global_transform.origin + Vector3.UP * 0.65
 	if create_blast:
@@ -1122,32 +1291,15 @@ func create_emergency_vehicle(kind: String, spawn_position: Vector3):
 	register_damageable_vehicle(vehicle, 240 if kind == "fire" else 160, "%s_vehicle" % kind)
 	add_child(vehicle)
 	if kind == "fire":
-		add_box(vehicle, "Body", Vector3(0, 0.55, 0), Vector3(2.6, 1.45, 5.8), Color("c52520"), false)
-		add_box(vehicle, "Cab", Vector3(0, 1.42, -1.62), Vector3(2.4, 1.25, 2.15), Color("e43a31"), false)
-		add_box(vehicle, "Windshield", Vector3(0, 1.55, -2.72), Vector3(2.0, 0.65, 0.08), Color("315b6d"), false)
-		add_box(vehicle, "Ladder", Vector3(0, 1.55, 0.95), Vector3(0.65, 0.18, 3.0), Color("d8d7cc"), false)
-		for side in [-1, 1]:
-			for z in [-1.7, 1.75]:
-				add_cylinder(vehicle, "Wheel", Vector3(side * 1.34, -0.05, z), 0.52, 0.30, Color("111214"), Vector3(0, 0, 90))
-		var fire_collision = CollisionShape.new()
-		fire_collision.name = "CollisionShape"
-		var fire_shape = BoxShape.new()
-		fire_shape.extents = Vector3(1.38, 0.92, 3.0)
-		fire_collision.shape = fire_shape
-		fire_collision.translation.y = 0.72
-		vehicle.add_child(fire_collision)
+		add_hlf_visual(vehicle)
+		add_hlf_collision(vehicle)
+		set_hlf_blue_lights(vehicle, false, false)
+		add_fire_engine_audio(vehicle)
 	else:
 		add_golf_visual(vehicle, true)
 		add_police_golf_livery(vehicle)
 		add_golf_collision(vehicle)
-	if kind == "fire":
-		var red_light = add_sphere(vehicle, "RedLight", Vector3(-0.30, 1.85, 0), 0.14, Color("ff2020"))
-		var blue_light = add_sphere(vehicle, "BlueLight", Vector3(0.30, 1.85, 0), 0.14, Color("248dff"))
-		for light_mesh in [red_light, blue_light]:
-			var light_mat = light_mesh.mesh.material as SpatialMaterial
-			light_mat.emission_enabled = true
-			light_mat.emission = light_mat.albedo_color
-	else:
+	if kind != "fire":
 		for light_data in [["BlueLightLeft", -0.36], ["BlueLightRight", 0.36]]:
 			var police_light = add_box(vehicle, light_data[0], Vector3(float(light_data[1]), 0.86, 0), Vector3(0.56, 0.16, 0.24), Color("167cff"), false)
 			var police_light_mat = police_light.mesh.material as SpatialMaterial
@@ -1182,10 +1334,17 @@ func dispatch_police(incident: Vector3, severity := 1):
 func update_emergency_vehicles(delta):
 	for response in emergency_vehicles:
 		var vehicle = response.node
-		if not is_instance_valid(vehicle) or response.arrived:
+		if not is_instance_valid(vehicle):
 			continue
 		if vehicle.has_meta("destroyed") and bool(vehicle.get_meta("destroyed")):
 			response.arrived = true
+			if response.kind == "fire":
+				set_hlf_blue_lights(vehicle, false, false)
+				stop_fire_engine_audio(vehicle)
+			continue
+		if response.kind == "fire":
+			update_hlf_emergency_effects(vehicle, not response.arrived)
+		if response.arrived:
 			continue
 		var target = response.target
 		var offset = target - vehicle.translation
@@ -1205,14 +1364,29 @@ func update_emergency_vehicles(delta):
 			else:
 				spawn_firefighters(vehicle.global_transform.origin, response.incident)
 				alert_label.text = "FEUERWEHR AM EINSATZORT"
-		var flash = int(OS.get_ticks_msec() / 220) % 2 == 0
-		if vehicle.has_node("BlueLightLeft"):
-			vehicle.get_node("BlueLightLeft").visible = flash
-			vehicle.get_node("BlueLightRight").visible = not flash
-		elif vehicle.has_node("RedLight"):
-			vehicle.get_node("RedLight").visible = flash
-		if vehicle.has_node("BlueLight"):
-			vehicle.get_node("BlueLight").visible = not flash
+				update_hlf_emergency_effects(vehicle, false)
+		if response.kind == "police":
+			var flash = int(OS.get_ticks_msec() / 220) % 2 == 0
+			if vehicle.has_node("BlueLightLeft"):
+				vehicle.get_node("BlueLightLeft").visible = flash
+				vehicle.get_node("BlueLightRight").visible = not flash
+
+func update_hlf_emergency_effects(vehicle: Node, siren_active: bool):
+	# Two quick flashes at the front, followed by two at the rear.
+	var flash_phase = int(OS.get_ticks_msec() / 110) % 8
+	set_hlf_blue_lights(vehicle, flash_phase == 0 or flash_phase == 2, flash_phase == 4 or flash_phase == 6)
+	var engine_audio = vehicle.get_node_or_null("EngineAudio")
+	if engine_audio is AudioStreamPlayer3D:
+		engine_audio.pitch_scale = 1.08 if siren_active else 0.78
+		engine_audio.unit_db = -8.0 if siren_active else -12.0
+		if not engine_audio.playing:
+			engine_audio.play()
+	var horn_audio = vehicle.get_node_or_null("MartinshornAudio")
+	if horn_audio is AudioStreamPlayer3D:
+		if siren_active and not horn_audio.playing:
+			horn_audio.play()
+		elif not siren_active and horn_audio.playing:
+			horn_audio.stop()
 
 func spawn_police_officers(vehicle_position: Vector3):
 	for side in [-1, 1]:

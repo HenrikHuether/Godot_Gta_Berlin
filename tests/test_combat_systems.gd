@@ -54,6 +54,7 @@ func _run():
 	_test_player_damage(main)
 	_test_player_death_sequence(main)
 	_test_damageable_vehicles(main)
+	_test_hlf_fire_engine(main)
 
 	# The rifle target is behind the officer and cannot obstruct this shot, but
 	# move the actors above the map again to keep the line of sight deterministic.
@@ -74,7 +75,7 @@ func _run():
 		_test_police_officer_and_shot(main, officer)
 
 	if failures.empty():
-		print("PASS: combat, audio, vehicle damage, death fade, reload, and police shooting")
+		print("PASS: combat, audio, vehicle damage, HLF emergency equipment, death fade, reload, and police shooting")
 		quit(0)
 	else:
 		for failure in failures:
@@ -110,7 +111,7 @@ func _test_weapon_models_and_selection(main):
 
 
 func _test_procedural_audio(main):
-	var expected_sounds = ["pistol", "rifle", "police_pistol", "rocket", "explosion", "fire"]
+	var expected_sounds = ["pistol", "rifle", "police_pistol", "rocket", "explosion", "fire", "fire_engine", "martinshorn"]
 	for sound_name in expected_sounds:
 		var exists = main.sound_streams.has(sound_name)
 		_expect(exists, "%s should have a procedural sound stream" % sound_name)
@@ -126,14 +127,16 @@ func _test_procedural_audio(main):
 		_expect(not stream.stereo, "%s sound should remain mono for 3D positioning" % sound_name)
 		_expect(stream.data.size() > 0, "%s sound should contain generated PCM frames" % sound_name)
 
-	if main.sound_streams.has("fire") and main.sound_streams["fire"] is AudioStreamSample:
-		var fire_stream = main.sound_streams["fire"]
+	for loop_name in ["fire", "fire_engine", "martinshorn"]:
+		if not main.sound_streams.has(loop_name) or not (main.sound_streams[loop_name] is AudioStreamSample):
+			continue
+		var loop_stream = main.sound_streams[loop_name]
 		_expect(
-			fire_stream.loop_mode == AudioStreamSample.LOOP_FORWARD,
-			"vehicle-fire sound should loop forward"
+			loop_stream.loop_mode == AudioStreamSample.LOOP_FORWARD,
+			"%s sound should loop forward" % loop_name
 		)
-		_expect(fire_stream.loop_begin == 0, "vehicle-fire loop should begin at its first frame")
-		_expect(fire_stream.loop_end > fire_stream.loop_begin, "vehicle-fire loop should have a non-empty range")
+		_expect(loop_stream.loop_begin == 0, "%s loop should begin at its first frame" % loop_name)
+		_expect(loop_stream.loop_end > loop_stream.loop_begin, "%s loop should have a non-empty range" % loop_name)
 
 
 func _make_training_target(main, position: Vector3) -> StaticBody:
@@ -290,6 +293,148 @@ func _test_golf_vehicle_visual(vehicle, police_variant: bool):
 		_expect(vehicle.get_node_or_null("PoliceDoorLabelRight") is Label3D, "police Golf should retain its right POLIZEI marking")
 		_expect(vehicle.get_node_or_null("BlueLightLeft") is MeshInstance, "police Golf should retain the left blue beacon")
 		_expect(vehicle.get_node_or_null("BlueLightRight") is MeshInstance, "police Golf should retain the right blue beacon")
+
+
+func _test_hlf_fire_engine(main):
+	# Keep the factory/destruction checks well away from the player and the patrol
+	# car created above while exercising the same runtime path as a real dispatch.
+	var remote_position = main.player.global_transform.origin + Vector3(-220, 0, 220)
+	var fire_engine = main.create_emergency_vehicle("fire", remote_position)
+	_expect(is_instance_valid(fire_engine), "fire-vehicle factory should return an HLF")
+	if not is_instance_valid(fire_engine):
+		return
+
+	_expect(fire_engine.name == "FireEngine", "fire vehicle should retain the stable FireEngine node name")
+	_expect(fire_engine.has_meta("role") and str(fire_engine.get_meta("role")) == "vehicle", "HLF should be registered with the vehicle role")
+	_expect(fire_engine.has_meta("vehicle_kind") and str(fire_engine.get_meta("vehicle_kind")) == "fire_vehicle", "HLF should identify itself as a fire vehicle")
+	_expect(fire_engine.has_meta("health") and int(fire_engine.get_meta("health")) == 240, "HLF should begin with 240 HP")
+	_expect(fire_engine.has_meta("max_health") and int(fire_engine.get_meta("max_health")) == 240, "HLF maximum health should be 240 HP")
+	_expect(fire_engine.has_meta("destroyed") and not bool(fire_engine.get_meta("destroyed")), "HLF should begin undestroyed")
+
+	var visual = fire_engine.get_node_or_null("HLFVisual")
+	_expect(is_instance_valid(visual), "HLF should contain its imported-model visual wrapper")
+	var model = visual.get_node_or_null("HLFModel") if is_instance_valid(visual) else null
+	_expect(is_instance_valid(model), "HLF visual wrapper should contain the imported HLF model")
+
+	var front_beacon = _find_descendant(model, "Blaulicht_Vorne") if is_instance_valid(model) else null
+	var rear_beacon = _find_descendant(model, "Blaulicht_Hinten") if is_instance_valid(model) else null
+	_test_hlf_beacon(front_beacon, "front")
+	_test_hlf_beacon(rear_beacon, "rear")
+	var front_flash = model.get_node_or_null("BlueFlashLightFront") if is_instance_valid(model) else null
+	var rear_flash_left = model.get_node_or_null("BlueFlashLightRearLeft") if is_instance_valid(model) else null
+	var rear_flash_right = model.get_node_or_null("BlueFlashLightRearRight") if is_instance_valid(model) else null
+	_test_hlf_flash_light(front_flash, Vector3(0.0113, 2.6606, 0.7325), "front")
+	_test_hlf_flash_light(rear_flash_left, Vector3(-0.7865, 2.7684, -5.3798), "rear-left")
+	_test_hlf_flash_light(rear_flash_right, Vector3(0.7836, 2.7684, -5.3798), "rear-right")
+
+	var collider = fire_engine.get_node_or_null("CollisionShape")
+	_expect(is_instance_valid(collider) and collider.shape is BoxShape, "HLF should retain a direct box collider")
+	if is_instance_valid(collider) and collider.shape is BoxShape:
+		_expect(collider.shape.extents == Vector3(1.15, 1.25, 3.70), "HLF collider should match the imported model bounds")
+
+	var engine_audio = fire_engine.get_node_or_null("EngineAudio")
+	var martinshorn_audio = fire_engine.get_node_or_null("MartinshornAudio")
+	_test_hlf_loop_audio(engine_audio, main.sound_streams.get("fire_engine", null), "engine")
+	_test_hlf_loop_audio(martinshorn_audio, main.sound_streams.get("martinshorn", null), "Martinshorn")
+
+	var has_light_helper = main.has_method("set_hlf_blue_lights")
+	_expect(has_light_helper, "main should expose set_hlf_blue_lights for deterministic beacon updates")
+	if has_light_helper and front_beacon is MeshInstance and rear_beacon is MeshInstance:
+		main.set_hlf_blue_lights(fire_engine, true, false)
+		_expect(is_instance_valid(front_flash) and front_flash.visible, "front HLF OmniLight should be visible in the front-on phase")
+		_expect(is_instance_valid(rear_flash_left) and not rear_flash_left.visible, "left rear HLF OmniLight should be hidden in the front-on phase")
+		_expect(is_instance_valid(rear_flash_right) and not rear_flash_right.visible, "right rear HLF OmniLight should be hidden in the front-on phase")
+		var front_emission = _hlf_beacon_emission_strength(front_beacon)
+		var rear_emission = _hlf_beacon_emission_strength(rear_beacon)
+		_expect(
+			front_emission > rear_emission + 0.5,
+			"front-on HLF phase should have materially stronger front emission than rear emission"
+		)
+
+	# At the incident the diesel remains in idle while the Martinshorn stops. It
+	# must be possible to resume the en-route state before destruction as well.
+	main.update_hlf_emergency_effects(fire_engine, false)
+	if engine_audio is AudioStreamPlayer3D:
+		_expect(engine_audio.playing and is_equal_approx(engine_audio.pitch_scale, 0.78), "arrived HLF should retain its idling engine loop")
+	if martinshorn_audio is AudioStreamPlayer3D:
+		_expect(not martinshorn_audio.playing, "arrived HLF should stop its Martinshorn loop")
+	main.update_hlf_emergency_effects(fire_engine, true)
+	if martinshorn_audio is AudioStreamPlayer3D:
+		_expect(martinshorn_audio.playing, "en-route HLF state should resume its Martinshorn loop")
+
+	main.damage_vehicle(fire_engine, 300)
+	_expect(bool(fire_engine.get_meta("destroyed")), "lethal damage should mark the HLF destroyed")
+	for flash_light in [front_flash, rear_flash_left, rear_flash_right]:
+		if flash_light is OmniLight:
+			_expect(not flash_light.visible, "destroying the HLF should switch off every blue cast light")
+	if engine_audio is AudioStreamPlayer3D:
+		_expect(not engine_audio.playing, "destroying the HLF should stop its engine loop")
+	if martinshorn_audio is AudioStreamPlayer3D:
+		_expect(not martinshorn_audio.playing, "destroying the HLF should stop its Martinshorn loop")
+
+
+func _test_hlf_beacon(beacon, location: String):
+	_expect(beacon is MeshInstance, "HLF model should contain the nested %s blue-light mesh" % location)
+	if not (beacon is MeshInstance):
+		return
+	_expect(beacon.mesh != null and beacon.mesh.get_surface_count() > 0, "%s HLF beacon should contain at least one mesh surface" % location)
+	if beacon.mesh == null:
+		return
+	_expect(beacon.has_meta("blue_light_surface"), "%s HLF beacon should register its blue-light surface" % location)
+	if beacon.has_meta("blue_light_surface"):
+		var surface_index = int(beacon.get_meta("blue_light_surface"))
+		_expect(surface_index >= 0 and surface_index < beacon.mesh.get_surface_count(), "%s HLF beacon should register a valid surface index" % location)
+		var light_material = beacon.get_surface_material(surface_index) if surface_index >= 0 and surface_index < beacon.mesh.get_surface_count() else null
+		_expect(light_material is SpatialMaterial, "%s HLF beacon surface should have a SpatialMaterial override" % location)
+		if light_material is SpatialMaterial:
+			_expect(light_material.emission_enabled, "%s HLF beacon surface override should be emissive" % location)
+			_expect(light_material.emission.b > light_material.emission.r and light_material.emission.b > light_material.emission.g, "%s HLF beacon emission should remain blue" % location)
+
+
+func _test_hlf_flash_light(flash_light, expected_position: Vector3, location: String):
+	_expect(flash_light is OmniLight, "HLF should contain the %s BlueFlashLight OmniLight" % location)
+	if not (flash_light is OmniLight):
+		return
+	_expect(flash_light.translation.distance_to(expected_position) < 0.001, "%s HLF OmniLight should sit at the optical lens centre" % location)
+	_expect(flash_light.omni_range > 0.0 and flash_light.light_energy > 0.0, "%s HLF OmniLight should cast visible blue light" % location)
+
+
+func _test_hlf_loop_audio(audio, expected_stream, label: String):
+	_expect(audio is AudioStreamPlayer3D, "HLF should contain a direct %s AudioStreamPlayer3D" % label)
+	if not (audio is AudioStreamPlayer3D):
+		return
+	_expect(audio.get_parent().name == "FireEngine", "HLF %s audio should move with the vehicle" % label)
+	_expect(audio.stream == expected_stream and expected_stream != null, "HLF %s audio should use its registered sound stream" % label)
+	_expect(audio.playing, "HLF %s audio loop should start with the vehicle" % label)
+	_expect(audio.unit_size > 1.0, "HLF %s audio should use deliberate long-range attenuation" % label)
+	_expect(audio.out_of_range_mode == AudioStreamPlayer3D.OUT_OF_RANGE_PAUSE, "HLF %s audio should pause mixing outside its audible range" % label)
+	if audio.stream is AudioStreamSample:
+		_expect(audio.stream.loop_mode == AudioStreamSample.LOOP_FORWARD, "HLF %s audio stream should loop forward" % label)
+
+
+func _find_descendant(node, target_name: String):
+	if not is_instance_valid(node):
+		return null
+	if node.name == target_name:
+		return node
+	for child in node.get_children():
+		var descendant = _find_descendant(child, target_name)
+		if descendant != null:
+			return descendant
+	return null
+
+
+func _hlf_beacon_emission_strength(beacon: MeshInstance) -> float:
+	if beacon.mesh == null or not beacon.has_meta("blue_light_surface"):
+		return 0.0
+	var surface_index = int(beacon.get_meta("blue_light_surface"))
+	if surface_index < 0 or surface_index >= beacon.mesh.get_surface_count():
+		return 0.0
+	var light_material = beacon.get_surface_material(surface_index)
+	if not (light_material is SpatialMaterial) or not light_material.emission_enabled:
+		return 0.0
+	var emission_peak = max(light_material.emission.r, max(light_material.emission.g, light_material.emission.b))
+	return emission_peak * light_material.emission_energy
 
 
 func _test_police_officer_and_shot(main, officer):

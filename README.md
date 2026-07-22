@@ -5,13 +5,14 @@ bildet Berliner Stadtblöcke mit texturierten Gründerzeitfassaden, Straßen, In
 Stadtmobiliar und Landmarken ab. Die NPCs verwenden das riggte Modell `Assets/HumanV2.glb`.
 Eine prozedurale Außenzone erweitert die befahrbare Karte auf 1,4 × 1,4 Kilometer – mit
 Ringstraße, Ausfallstraßen, Gehwegen, Außenbezirken, Beleuchtung und Randbarrieren.
-Spieler- und Polizeiauto verwenden ein farbbasiertes Golf-7-Modell ohne Texturen. Pistole,
-Sturmgewehr und Raketenwerfer besitzen eigene First-Person-Modelle. Die Fahrphysik
+Spieler- und Polizeiauto verwenden ein farbbasiertes Golf-7-Modell ohne Texturen. Die
+Feuerwehr fährt mit einem maßstäblichen HLF samt getrennt blinkendem Front- und Heckblaulicht
+vor. Pistole, Sturmgewehr und Raketenwerfer besitzen eigene First-Person-Modelle. Die Fahrphysik
 berücksichtigt Beschleunigung, Reibung, Steigung und Bodenneigung. Schüsse verwenden
 Magazine, Reservemunition, Nachladezeiten, waffenspezifische Streuung, Rückstoß,
 Feuerraten, Distanzabfall und Kopftreffer; Mündungsfeuer, Hülsen, Leuchtspur und Einschlag
 machen die Treffer nachvollziehbar. Prozedurale 3D-Sounds begleiten Schüsse,
-Raketenstarts, Explosionen und brennende Fahrzeuge.
+Raketenstarts, Explosionen, brennende Fahrzeuge sowie Motor und Martinshorn des HLF.
 
 Mission 1 ist als vollständiger Vertical Slice spielbar: Mit einem Aktenkoffer fährt der
 Spieler ins Regierungsviertel, verschafft sich Zugang zum Bundestag und übergibt die
@@ -70,8 +71,9 @@ godot3 --no-window --audio-driver Dummy --path . --script tests/test_combat_syst
 Der erste Test prüft mehrere friedliche Überzeugungswege, Drohungen, Verneinungen und
 erneute Versuche. Der zweite prüft beide Missionsrouten, die Übergabe sowie Benzin,
 Fahrzeugschaden und Fahndungsanstieg. Der dritte prüft Waffenmodelle, Gewehrtreffer,
-Magazine, Nachladen, Spielerschaden, Torso-Zielpunkt, Sound und Fahrzeugzerstörung. Der
-Missionstest kontrolliert zusätzlich Kartengröße und die freie Reichstag-Baufläche.
+Magazine, Nachladen, Spielerschaden, Torso-Zielpunkt, Sound, Fahrzeugzerstörung und das
+HLF samt Blaulicht- und Audioausstattung. Der Missionstest kontrolliert zusätzlich
+Kartengröße und die freie Reichstag-Baufläche.
 
 ## Fahrzeug und Fahndung
 
@@ -94,7 +96,9 @@ Missionstest kontrolliert zusätzlich Kartengröße und die freie Reichstag-Bauf
 - Bei 0 HP kippt der Spieler rückwärts um. Eine vollständige Schwarzblende verdeckt den
   anschließenden Respawn und gibt die Steuerung erst nach dem Einblenden wieder frei.
 - Bazooka-Treffer zerstören Gebäude. Das Gebäude wird durch ein kollidierendes Trümmerfeld
-  mit Brandstellen ersetzt und ein Feuerwehrfahrzeug rückt über die nächste Straße an.
+  mit Brandstellen ersetzt und ein HLF rückt mit räumlichem Motorgeräusch und Martinshorn
+  über die nächste Straße an. Emissive Blaulichtflächen und blaue 3D-Lichter blitzen vorne
+  und hinten und beleuchten dabei die Umgebung.
 - Die Feuerwehr steigt am Einsatzort aus und löscht den Brand nach kurzer Zeit.
 
 Benötigt wird **Godot 3.6.x**. `run.sh` verwendet zuerst die optionale lokale Kopie unter
