@@ -6,13 +6,15 @@ Stadtmobiliar und Landmarken ab. Die NPCs verwenden das riggte Modell `Assets/Hu
 Eine prozedurale Außenzone erweitert die befahrbare Karte auf 1,4 × 1,4 Kilometer – mit
 Ringstraße, Ausfallstraßen, Gehwegen, Außenbezirken, Beleuchtung und Randbarrieren.
 Spieler- und Polizeiauto verwenden ein farbbasiertes Golf-7-Modell ohne Texturen. Die
-Feuerwehr fährt mit einem maßstäblichen HLF samt getrennt blinkendem Front- und Heckblaulicht
-vor. Pistole, Sturmgewehr und Raketenwerfer besitzen eigene First-Person-Modelle. Die Fahrphysik
+Feuerwehr fährt mit einem maßstäblichen, sauber auf der Straße stehenden HLF samt getrennt
+blinkendem Front- und Heckblaulicht vor. Pistole, Sturmgewehr und Raketenwerfer besitzen
+eigene First-Person-Modelle. Die Fahrphysik
 berücksichtigt Beschleunigung, Reibung, Steigung und Bodenneigung. Schüsse verwenden
 Magazine, Reservemunition, Nachladezeiten, waffenspezifische Streuung, Rückstoß,
 Feuerraten, Distanzabfall und Kopftreffer; Mündungsfeuer, Hülsen, Leuchtspur und Einschlag
 machen die Treffer nachvollziehbar. Prozedurale 3D-Sounds begleiten Schüsse,
-Raketenstarts, Explosionen, brennende Fahrzeuge sowie Motor und Martinshorn des HLF.
+Raketenstarts, Explosionen, brennende Fahrzeuge sowie Motor und ein mehrstimmiges
+pneumatisches Martinshorn des HLF.
 
 Mission 1 ist als vollständiger Vertical Slice spielbar: Mit einem Aktenkoffer fährt der
 Spieler ins Regierungsviertel, verschafft sich Zugang zum Bundestag und übergibt die
@@ -72,7 +74,8 @@ Der erste Test prüft mehrere friedliche Überzeugungswege, Drohungen, Verneinun
 erneute Versuche. Der zweite prüft beide Missionsrouten, die Übergabe sowie Benzin,
 Fahrzeugschaden und Fahndungsanstieg. Der dritte prüft Waffenmodelle, Gewehrtreffer,
 Magazine, Nachladen, Spielerschaden, Torso-Zielpunkt, Sound, Fahrzeugzerstörung und das
-HLF samt Blaulicht- und Audioausstattung. Der Missionstest kontrolliert zusätzlich
+HLF samt Bodenlage, Blaulicht, Audioausstattung und fünfminütigem Schlaucheinsatz. Der
+Missionstest kontrolliert zusätzlich
 Kartengröße und die freie Reichstag-Baufläche.
 
 ## Fahrzeug und Fahndung
@@ -98,8 +101,12 @@ Kartengröße und die freie Reichstag-Baufläche.
 - Bazooka-Treffer zerstören Gebäude. Das Gebäude wird durch ein kollidierendes Trümmerfeld
   mit Brandstellen ersetzt und ein HLF rückt mit räumlichem Motorgeräusch und Martinshorn
   über die nächste Straße an. Emissive Blaulichtflächen und blaue 3D-Lichter blitzen vorne
-  und hinten und beleuchten dabei die Umgebung.
-- Die Feuerwehr steigt am Einsatzort aus und löscht den Brand nach kurzer Zeit.
+  und hinten und beleuchten dabei die Umgebung. Vier gestimmte Hornpfeifen, Obertöne,
+  Ventilpausen und Doppler-Effekt geben dem Martinshorn einen räumlicheren Klang.
+- Zwei Feuerwehrleute steigen auf der Brandseite neben dem Fahrzeug aus, richten einen
+  sichtbaren Schlauch mit animiertem Wasserstrahl auf den Brand und löschen ihn nach fünf
+  Minuten. Das Martinshorn verstummt unmittelbar bei der Ankunft; gleichzeitig alarmierte
+  Polizeiwagen nutzen getrennte Spuren und können das HLF nicht mehr blockieren.
 
 Benötigt wird **Godot 3.6.x**. `run.sh` verwendet zuerst die optionale lokale Kopie unter
 `.tools/godot/` und fällt anschließend auf ein systemweit installiertes `godot3` zurück.

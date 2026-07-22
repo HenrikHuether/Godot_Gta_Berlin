@@ -34,11 +34,12 @@ func _render_preview():
 	ground_material.roughness = 0.95
 	ground_mesh.material = ground_material
 	ground.mesh = ground_mesh
+	ground.translation.y = 0.05
 	stage.add_child(ground)
 
 	var helper = MAIN_SCRIPT.new()
 	helper.build_audio()
-	var fire_engine = helper.create_emergency_vehicle("fire", Vector3(0, 0.62, 0))
+	var fire_engine = helper.create_emergency_vehicle("fire", Vector3(0, helper.HLF_GROUND_HEIGHT, 0))
 	helper.remove_child(fire_engine)
 	stage.add_child(fire_engine)
 	helper.set_hlf_blue_lights(fire_engine, true, false)

@@ -10,14 +10,24 @@ const GOLF_VISUAL_SCALE = 0.65
 const GOLF_VISUAL_OFFSET = Vector3(0.0, -0.52, 0.0)
 const GOLF_COLLIDER_EXTENTS = Vector3(1.06, 0.72, 2.14)
 const GOLF_GROUND_HEIGHT = 0.72
-const HLF_VISUAL_OFFSET = Vector3(0.0, -0.62, -2.654151)
+const HLF_VISUAL_OFFSET = Vector3(0.0, -0.5318517, -2.654151)
 const HLF_COLLIDER_EXTENTS = Vector3(1.15, 1.25, 3.70)
 const HLF_COLLIDER_OFFSET = Vector3(0.0, 0.68, 0.0)
+const HLF_TIRE_BOTTOM_LOCAL_Y = 0.00685
+const HLF_ROAD_SURFACE_Y = 0.05
+const HLF_GROUND_HEIGHT = 0.57
 const HLF_FRONT_LIGHT_POSITION = Vector3(0.0113, 2.6606, 0.7325)
 const HLF_REAR_LIGHT_LEFT_POSITION = Vector3(-0.7865, 2.7684, -5.3798)
 const HLF_REAR_LIGHT_RIGHT_POSITION = Vector3(0.7836, 2.7684, -5.3798)
 const HLF_BLUE_EMISSION_ENERGY = 5.5
 const HLF_BLUE_LIGHT_ENERGY = 2.4
+const FIRE_SUPPRESSION_DURATION = 300.0
+const FIRE_ENGINE_ARRIVAL_DISTANCE = 6.0
+const EMERGENCY_LANE_OFFSET = 3.0
+const FIREFIGHTER_SIDE_DISTANCE = 2.10
+const FIREFIGHTER_FOOT_HEIGHT = 0.07
+const WATER_SPRAY_SEGMENTS = 14
+const WATER_DROPLET_COUNT = 7
 const WALK_SPEED = 8.0
 const DRIVE_SPEED = 22.0
 const GRAVITY = 24.0
@@ -92,6 +102,7 @@ var death_start_camera_rotation = Vector3.ZERO
 var sound_streams = {}
 var vehicle_fires = []
 var destroyed_vehicles = []
+var firefighting_operations = []
 
 func _ready():
 	Input.set_mouse_mode(Input.MOUSE_MODE_CAPTURED)
@@ -158,23 +169,18 @@ func create_sound_sample(kind: String, duration: float, looping := false) -> Aud
 				+ sin(time * PI * 2.0 * 240.0) * 0.045
 			) * engine_pulse
 		elif kind == "martinshorn":
-			# German emergency horn interval: 435 Hz and 580 Hz, alternating every 0.6 s.
-			# Equal plateaus and narrow smooth crossfades prevent clicks at both changes
-			# and let the first audible cycle start with the full cadence.
+			# Four pneumatic bells recreate the paired pipes and characteristic beat of
+			# a classic German Martinshorn. Independent valve envelopes add the short
+			# pressure dip between notes and also make the 2.4-second loop seamless.
 			var horn_cycle = fmod(time, 1.2)
-			var high_mix = 0.0
-			var horn_transition = 0.0
-			if horn_cycle >= 0.54 and horn_cycle < 0.60:
-				horn_transition = (horn_cycle - 0.54) / 0.06
-				high_mix = horn_transition * horn_transition * (3.0 - 2.0 * horn_transition)
-			elif horn_cycle >= 0.60 and horn_cycle < 1.14:
-				high_mix = 1.0
-			elif horn_cycle >= 1.14:
-				horn_transition = (horn_cycle - 1.14) / 0.06
-				high_mix = 1.0 - horn_transition * horn_transition * (3.0 - 2.0 * horn_transition)
-			var low_horn = sin(time * PI * 2.0 * 435.0) * 0.40 + sin(time * PI * 2.0 * 870.0) * 0.10
-			var high_horn = sin(time * PI * 2.0 * 580.0) * 0.40 + sin(time * PI * 2.0 * 1160.0) * 0.10
-			wave = lerp(low_horn, high_horn, high_mix)
+			var low_gate = martinshorn_note_gate(horn_cycle)
+			var high_gate = martinshorn_note_gate(horn_cycle - 0.6)
+			var low_horn = martinshorn_horn_voice(435.0, time) * 0.56 + martinshorn_horn_voice(450.0, time) * 0.44
+			var high_horn = martinshorn_horn_voice(580.0, time) * 0.56 + martinshorn_horn_voice(600.0, time) * 0.44
+			var pressure = 0.97 + sin(time * PI * 2.0 * 5.0 + 0.3) * 0.025 + sin(time * PI * 2.0 * 10.0 + 1.1) * 0.012
+			var active_gate = low_gate + high_gate
+			var air_noise = noise * 0.008 * active_gate * (1.0 - active_gate * 0.5)
+			wave = (low_horn * low_gate + high_horn * high_gate) * pressure * 0.76 + air_noise
 		else:
 			wave = 0.0
 		var value = int(clamp(wave, -1.0, 1.0) * 32767.0)
@@ -190,6 +196,29 @@ func create_sound_sample(kind: String, duration: float, looping := false) -> Aud
 		sample.loop_begin = 0
 		sample.loop_end = frame_count
 	return sample
+
+func martinshorn_note_gate(local_time: float) -> float:
+	if local_time < 0.0 or local_time >= 0.6:
+		return 0.0
+	if local_time < 0.028:
+		return smoothstep_unit(local_time / 0.028)
+	if local_time > 0.558:
+		return 1.0 - smoothstep_unit((local_time - 0.558) / 0.042)
+	return 1.0
+
+func martinshorn_horn_voice(frequency: float, time: float) -> float:
+	var phase = time * PI * 2.0 * frequency
+	return (
+		sin(phase) * 0.64
+		+ sin(phase * 2.0 + 0.10) * 0.205
+		+ sin(phase * 3.0 + 0.35) * 0.09
+		+ sin(phase * 4.0 + 0.20) * 0.04
+		+ sin(phase * 5.0 + 0.55) * 0.018
+	)
+
+func smoothstep_unit(value: float) -> float:
+	var bounded = clamp(value, 0.0, 1.0)
+	return bounded * bounded * (3.0 - 2.0 * bounded)
 
 func play_sound_3d(kind: String, position: Vector3, volume_db := 0.0, looping := false):
 	if not sound_streams.has(kind):
@@ -260,6 +289,30 @@ func add_cylinder(parent: Node, name: String, pos: Vector3, radius: float, heigh
 	parent.add_child(mesh_instance)
 	return mesh_instance
 
+func add_cylinder_between(parent: Spatial, name: String, start: Vector3, finish: Vector3, radius: float, color: Color):
+	var offset = finish - start
+	if offset.length_squared() < 0.000001:
+		return null
+	var mesh_instance = MeshInstance.new()
+	mesh_instance.name = name
+	mesh_instance.cast_shadow = GeometryInstance.SHADOW_CASTING_SETTING_OFF
+	var mesh = CylinderMesh.new()
+	mesh.top_radius = radius
+	mesh.bottom_radius = radius
+	mesh.height = offset.length()
+	mesh.radial_segments = 10
+	mesh.material = material(color)
+	mesh_instance.mesh = mesh
+	parent.add_child(mesh_instance)
+	# CylinderMesh is authored along +Y. Build a stable orthonormal basis whose
+	# Y axis follows the hose/nozzle segment, including near-vertical segments.
+	var y_axis = offset.normalized()
+	var reference_axis = Vector3.FORWARD if abs(y_axis.dot(Vector3.FORWARD)) < 0.96 else Vector3.RIGHT
+	var x_axis = reference_axis.cross(y_axis).normalized()
+	var z_axis = x_axis.cross(y_axis).normalized()
+	mesh_instance.global_transform = Transform(Basis(x_axis, y_axis, z_axis), (start + finish) * 0.5)
+	return mesh_instance
+
 func build_world():
 	var sun = DirectionalLight.new()
 	sun.rotation_degrees = Vector3(-55, -25, 0)
@@ -286,6 +339,7 @@ func build_player():
 	camera.translation = Vector3(0, 0.65, 0)
 	camera.far = 10000.0
 	camera.current = true
+	camera.doppler_tracking = Camera.DOPPLER_TRACKING_PHYSICS_STEP
 	player.add_child(camera)
 	weapon_pivot = Spatial.new()
 	weapon_pivot.name = "WeaponPivot"
@@ -541,7 +595,16 @@ func add_fire_engine_audio(vehicle: Node):
 		audio.max_distance = float(setup[3])
 		audio.pitch_scale = float(setup[4])
 		audio.unit_size = float(setup[5])
-		audio.out_of_range_mode = AudioStreamPlayer3D.OUT_OF_RANGE_PAUSE
+		if str(setup[0]) == "MartinshornAudio":
+			# Keep the cadence running while inaudible, then add motion and a broad
+			# forward radiation pattern like roof/front-mounted pneumatic horns.
+			audio.out_of_range_mode = AudioStreamPlayer3D.OUT_OF_RANGE_MIX
+			audio.doppler_tracking = AudioStreamPlayer3D.DOPPLER_TRACKING_PHYSICS_STEP
+			audio.emission_angle_enabled = true
+			audio.emission_angle_degrees = 80.0
+			audio.emission_angle_filter_attenuation_db = -6.0
+		else:
+			audio.out_of_range_mode = AudioStreamPlayer3D.OUT_OF_RANGE_PAUSE
 		audio.autoplay = true
 		vehicle.add_child(audio)
 		audio.play()
@@ -718,6 +781,7 @@ func _physics_process(delta):
 	update_emergency_vehicles(delta)
 	update_police_officers(delta)
 	update_vehicle_fires(delta)
+	update_firefighting_operations(delta)
 	if mission_one and not player_dying:
 		mission_one.update_mission(delta)
 	var near_car = player.global_transform.origin.distance_to(car.global_transform.origin) < 3.5
@@ -1311,9 +1375,10 @@ func dispatch_fire_department(incident: Vector3):
 	var route = response_route(incident, destroyed_buildings.size())
 	var fire_spawn = route[0]
 	var fire_target = route[1]
-	fire_spawn.y = 0.62
-	fire_target.y = 0.62
+	fire_spawn.y = HLF_GROUND_HEIGHT
+	fire_target.y = HLF_GROUND_HEIGHT
 	var engine = create_emergency_vehicle("fire", fire_spawn)
+	engine.look_at(Vector3(fire_target.x, fire_spawn.y, fire_target.z), Vector3.UP)
 	emergency_vehicles.append({"node": engine, "kind": "fire", "target": fire_target, "incident": incident, "arrived": false})
 	alert_label.text = "FEUERWEHR AUF ANFAHRT"
 
@@ -1325,9 +1390,21 @@ func dispatch_police(incident: Vector3, severity := 1):
 		var route = response_route(incident, police_dispatch_count + unit)
 		var police_spawn = route[0]
 		var police_target = route[1]
+		# Fire and police are dispatched together after a building collapse. Keep
+		# both patrol cars in their own lanes so they neither spawn inside the HLF
+		# nor converge on its exact stopping point at the incident.
+		var route_direction = police_target - police_spawn
+		route_direction.y = 0.0
+		if route_direction.length_squared() > 0.0001:
+			route_direction = route_direction.normalized()
+			var lane_right = Vector3(-route_direction.z, 0.0, route_direction.x)
+			var lane_offset = (-1.0 if unit == 0 else 1.0) * EMERGENCY_LANE_OFFSET
+			police_spawn = clamp_response_point(police_spawn + lane_right * lane_offset)
+			police_target = clamp_response_point(police_target + lane_right * lane_offset)
 		police_spawn.y = GOLF_GROUND_HEIGHT
 		police_target.y = GOLF_GROUND_HEIGHT
-		var police_car = create_emergency_vehicle("police", police_spawn + Vector3(unit * 2.6, 0, unit * 2.6))
+		var police_car = create_emergency_vehicle("police", police_spawn)
+		police_car.look_at(Vector3(police_target.x, police_spawn.y, police_target.z), Vector3.UP)
 		emergency_vehicles.append({"node": police_car, "kind": "police", "target": police_target, "incident": incident, "arrived": false})
 	alert_label.text = "POLIZEI ALARMIERT"
 
@@ -1349,22 +1426,29 @@ func update_emergency_vehicles(delta):
 		var target = response.target
 		var offset = target - vehicle.translation
 		offset.y = 0
-		if offset.length() > 2.5:
+		var arrival_distance = FIRE_ENGINE_ARRIVAL_DISTANCE if response.kind == "fire" else 2.5
+		if offset.length() > arrival_distance:
 			var speed = FIRE_ENGINE_SPEED if response.kind == "fire" else POLICE_SPEED
 			if vehicle is KinematicBody:
 				vehicle.move_and_slide(offset.normalized() * speed, Vector3.UP)
 			else:
 				vehicle.translation += offset.normalized() * speed * delta
+			# Horizontal KinematicBody collision recovery can otherwise lift a vehicle
+			# onto another responder and leave it permanently floating above the road.
+			vehicle.translation.y = HLF_GROUND_HEIGHT if response.kind == "fire" else GOLF_GROUND_HEIGHT
 			vehicle.look_at(Vector3(target.x, vehicle.translation.y, target.z), Vector3.UP)
 		else:
 			response.arrived = true
+			vehicle.translation.y = HLF_GROUND_HEIGHT if response.kind == "fire" else GOLF_GROUND_HEIGHT
 			if response.kind == "police":
 				spawn_police_officers(vehicle.global_transform.origin)
 				alert_label.text = "POLIZEI: STEHEN BLEIBEN!"
 			else:
-				spawn_firefighters(vehicle.global_transform.origin, response.incident)
-				alert_label.text = "FEUERWEHR AM EINSATZORT"
+				# Stop the horn before constructing the hose scene. Even if a future
+				# visual asset fails, the arrival state can never leave the siren running.
 				update_hlf_emergency_effects(vehicle, false)
+				spawn_firefighters(vehicle, response.incident)
+				alert_label.text = "FEUERWEHR LÖSCHT – 5 MIN."
 		if response.kind == "police":
 			var flash = int(OS.get_ticks_msec() / 220) % 2 == 0
 			if vehicle.has_node("BlueLightLeft"):
@@ -1636,39 +1720,193 @@ func update_damage_feedback(delta: float):
 	overlay_color.a = clamp(damage_flash_time / 0.38, 0.0, 1.0) * 0.32
 	damage_overlay.color = overlay_color
 
-func spawn_firefighters(vehicle_position: Vector3, incident: Vector3):
-	for side in [-1, 1]:
+func spawn_firefighters(vehicle: Spatial, incident: Vector3):
+	if not is_instance_valid(vehicle):
+		return null
+	var operation = Spatial.new()
+	operation.name = "FirefightingOperation"
+	operation.set_meta("duration_seconds", FIRE_SUPPRESSION_DURATION)
+	operation.set_meta("elapsed_seconds", 0.0)
+	add_child(operation)
+
+	var vehicle_position = vehicle.global_transform.origin
+	var right = vehicle.global_transform.basis.x.normalized()
+	var forward = -vehicle.global_transform.basis.z.normalized()
+	var to_incident = incident - vehicle_position
+	to_incident.y = 0.0
+	var incident_side = 1.0 if to_incident.dot(right) >= 0.0 else -1.0
+	var incident_forward = 1.0 if to_incident.dot(forward) >= 0.0 else -1.0
+	var side_position = vehicle_position + right * incident_side * FIREFIGHTER_SIDE_DISTANCE
+	var firefighter_ground_y = vehicle_position.y - HLF_GROUND_HEIGHT + FIREFIGHTER_FOOT_HEIGHT
+	var firefighter_positions = [
+		side_position + forward * incident_forward * 0.72,
+		side_position - forward * incident_forward * 0.72
+	]
+	var firefighters = []
+	for firefighter_index in range(firefighter_positions.size()):
+		var firefighter_position = firefighter_positions[firefighter_index]
+		firefighter_position.y = firefighter_ground_y
 		var firefighter = Spatial.new()
-		firefighter.name = "Firefighter"
-		firefighter.translation = Vector3(vehicle_position.x + side * 1.5, 0.05, vehicle_position.z)
+		firefighter.name = "FirefighterNozzle" if firefighter_index == 0 else "FirefighterBackup"
+		operation.add_child(firefighter)
+		firefighter.global_transform = Transform(Basis(), firefighter_position)
 		var human = HUMAN_SCENE.instance()
+		human.name = "FirefighterModel"
 		firefighter.add_child(human)
 		add_box(firefighter, "SafetyJacket", Vector3(0, 1.05, 0), Vector3(0.76, 0.62, 0.44), Color("d7bf21"), false)
 		add_box(firefighter, "ReflectiveStripe", Vector3(0, 1.0, -0.24), Vector3(0.70, 0.10, 0.03), Color("eff6dc"), false)
-		add_child(firefighter)
-	var hose = ImmediateGeometry.new()
-	hose.name = "WaterHose"
-	var hose_material = SpatialMaterial.new()
-	hose_material.flags_unshaded = true
-	hose_material.vertex_color_use_as_albedo = true
-	hose.material_override = hose_material
-	add_child(hose)
-	hose.begin(Mesh.PRIMITIVE_LINES)
-	hose.set_color(Color("75cfff"))
-	hose.add_vertex(vehicle_position + Vector3.UP)
-	hose.add_vertex(incident + Vector3.UP * 2.0)
-	hose.end()
-	get_tree().create_timer(5.0).connect("timeout", self, "extinguish_fire", [incident, hose])
+		var look_target = Vector3(incident.x, firefighter_position.y, incident.z)
+		if firefighter_position.distance_to(look_target) > 0.01:
+			firefighter.look_at(look_target, Vector3.UP)
+		firefighters.append(firefighter)
 
-func extinguish_fire(incident: Vector3, hose):
-	if is_instance_valid(hose):
-		hose.queue_free()
+	# A single attack line is handled by a two-person crew: the first responder
+	# holds the nozzle while the second supports the hose immediately behind.
+	var operator_position = firefighters[0].global_transform.origin
+	var backup_position = firefighters[1].global_transform.origin
+	var spray_target = incident + Vector3.UP * 1.65
+	var aim_direction = (spray_target - (operator_position + Vector3.UP * 1.22)).normalized()
+	var nozzle_start = operator_position + Vector3.UP * 1.22 + aim_direction * 0.16
+	var nozzle_end = nozzle_start + aim_direction * 0.34
+	add_cylinder_between(operation, "Nozzle", nozzle_start, nozzle_end, 0.035, Color("333a3e"))
+
+	var road_surface_y = vehicle_position.y - HLF_GROUND_HEIGHT + HLF_ROAD_SURFACE_Y
+	var pump_connection = vehicle_position + right * incident_side * 1.08 - forward * incident_forward * 0.35 + Vector3.UP * 0.25
+	var hose_points = [
+		pump_connection,
+		Vector3(vehicle_position.x, road_surface_y + 0.045, vehicle_position.z) + right * incident_side * 1.55 - forward * incident_forward * 0.25,
+		Vector3(backup_position.x, road_surface_y + 0.045, backup_position.z),
+		Vector3(operator_position.x, road_surface_y + 0.045, operator_position.z) - forward * incident_forward * 0.24,
+		nozzle_start
+	]
+	var hose_root = Spatial.new()
+	hose_root.name = "AttackHose"
+	operation.add_child(hose_root)
+	for hose_index in range(hose_points.size() - 1):
+		add_cylinder_between(hose_root, "HoseSegment%02d" % hose_index, hose_points[hose_index], hose_points[hose_index + 1], 0.045, Color("263c32"))
+
+	var water_spray = ImmediateGeometry.new()
+	water_spray.name = "WaterSpray"
+	water_spray.cast_shadow = GeometryInstance.SHADOW_CASTING_SETTING_OFF
+	var water_material = SpatialMaterial.new()
+	water_material.flags_unshaded = true
+	water_material.flags_transparent = true
+	water_material.vertex_color_use_as_albedo = true
+	water_material.params_blend_mode = SpatialMaterial.BLEND_MODE_ADD
+	water_material.emission_enabled = true
+	water_material.emission = Color("75cfff")
+	water_material.emission_energy = 1.7
+	water_spray.material_override = water_material
+	operation.add_child(water_spray)
+	var droplets = []
+	for droplet_index in range(WATER_DROPLET_COUNT):
+		var droplet = add_sphere(operation, "WaterDroplet%02d" % droplet_index, nozzle_end, 0.045, Color("9be3ff"))
+		droplet.cast_shadow = GeometryInstance.SHADOW_CASTING_SETTING_OFF
+		var droplet_material = droplet.mesh.material as SpatialMaterial
+		droplet_material.flags_unshaded = true
+		droplet_material.flags_transparent = true
+		droplet_material.params_blend_mode = SpatialMaterial.BLEND_MODE_ADD
+		droplet_material.emission_enabled = true
+		droplet_material.emission = Color("75cfff")
+		droplet_material.emission_energy = 1.25
+		droplets.append(droplet)
+
+	var spray_data = {
+		"node": water_spray,
+		"start": nozzle_end,
+		"target": spray_target,
+		"phase": 0.37,
+		"droplets": droplets
+	}
+	var operation_state = {
+		"root": operation,
+		"incident": incident,
+		"elapsed": 0.0,
+		"duration": FIRE_SUPPRESSION_DURATION,
+		"sprays": [spray_data]
+	}
+	firefighting_operations.append(operation_state)
+	update_water_spray(spray_data, 0.0)
+
+	var timer = Timer.new()
+	timer.name = "SuppressionTimer"
+	timer.one_shot = true
+	timer.wait_time = FIRE_SUPPRESSION_DURATION
+	operation.add_child(timer)
+	timer.connect("timeout", self, "extinguish_fire", [incident, operation])
+	timer.start()
+	return operation
+
+func update_firefighting_operations(delta: float):
+	for operation_state in firefighting_operations.duplicate():
+		var operation = operation_state.get("root", null)
+		if not is_instance_valid(operation):
+			firefighting_operations.erase(operation_state)
+			continue
+		operation_state["elapsed"] = float(operation_state.get("elapsed", 0.0)) + delta
+		operation.set_meta("elapsed_seconds", operation_state["elapsed"])
+		for spray_data in operation_state.get("sprays", []):
+			update_water_spray(spray_data, operation_state["elapsed"])
+
+func update_water_spray(spray_data: Dictionary, elapsed: float):
+	var spray = spray_data.get("node", null)
+	if not is_instance_valid(spray):
+		return
+	var start = spray_data.get("start", Vector3.ZERO)
+	var target = spray_data.get("target", Vector3.ZERO)
+	var phase = float(spray_data.get("phase", 0.0))
+	var stream_direction = (target - start).normalized()
+	var lateral = stream_direction.cross(Vector3.UP)
+	if lateral.length_squared() < 0.0001:
+		lateral = Vector3.RIGHT
+	else:
+		lateral = lateral.normalized()
+	spray.clear()
+	spray.begin(Mesh.PRIMITIVE_LINES)
+	for strand_index in range(4):
+		var strand_offset = (float(strand_index) - 1.5) * 0.018
+		for segment_index in range(WATER_SPRAY_SEGMENTS):
+			var from_t = float(segment_index) / float(WATER_SPRAY_SEGMENTS)
+			var to_t = float(segment_index + 1) / float(WATER_SPRAY_SEGMENTS)
+			var from_point = water_spray_point(start, target, from_t, elapsed, phase, lateral, strand_offset)
+			var to_point = water_spray_point(start, target, to_t, elapsed, phase, lateral, strand_offset)
+			spray.set_color(Color("d9f6ff").linear_interpolate(Color("63bfff"), from_t))
+			spray.add_vertex(spray.to_local(from_point))
+			spray.set_color(Color("d9f6ff").linear_interpolate(Color("63bfff"), to_t))
+			spray.add_vertex(spray.to_local(to_point))
+	spray.end()
+
+	var droplets = spray_data.get("droplets", [])
+	for droplet_index in range(droplets.size()):
+		var droplet = droplets[droplet_index]
+		if not is_instance_valid(droplet):
+			continue
+		var droplet_t = fmod(elapsed * 1.55 + float(droplet_index) / float(max(1, droplets.size())) + phase, 1.0)
+		var droplet_offset = sin(float(droplet_index) * 2.13) * 0.025
+		var droplet_position = water_spray_point(start, target, droplet_t, elapsed, phase + droplet_index, lateral, droplet_offset)
+		droplet.global_transform = Transform(Basis(), droplet_position)
+
+func water_spray_point(start: Vector3, target: Vector3, progress: float, elapsed: float, phase: float, lateral: Vector3, strand_offset: float) -> Vector3:
+	var point = start.linear_interpolate(target, progress)
+	var arc_height = clamp(start.distance_to(target) * 0.075, 0.45, 2.6)
+	var arc_weight = sin(progress * PI)
+	point.y += arc_weight * arc_height
+	point += lateral * (strand_offset + sin(elapsed * 11.0 + phase + progress * 19.0) * 0.028 * arc_weight)
+	return point
+
+func extinguish_fire(incident: Vector3, operation):
+	for operation_state in firefighting_operations.duplicate():
+		if operation_state.get("root", null) == operation:
+			firefighting_operations.erase(operation_state)
+	if is_instance_valid(operation):
+		operation.queue_free()
 	for child in get_children():
 		if child.name.begins_with("Rubble_") and child.global_transform.origin.distance_to(incident) < 12.0:
 			for rubble_child in child.get_children():
 				if rubble_child.name.begins_with("Fire"):
 					rubble_child.queue_free()
-	alert_label.text = "BRAND GELÖSCHT"
+	if is_instance_valid(alert_label):
+		alert_label.text = "BRAND GELÖSCHT"
 
 func show_shot_trace(from: Vector3, to: Vector3):
 	var tracer = ImmediateGeometry.new()

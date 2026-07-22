@@ -55,6 +55,7 @@ func _run():
 	_test_player_death_sequence(main)
 	_test_damageable_vehicles(main)
 	_test_hlf_fire_engine(main)
+	_test_combined_emergency_dispatch(main)
 
 	# The rifle target is behind the officer and cannot obstruct this shot, but
 	# move the actors above the map again to keep the line of sight deterministic.
@@ -137,6 +138,66 @@ func _test_procedural_audio(main):
 		)
 		_expect(loop_stream.loop_begin == 0, "%s loop should begin at its first frame" % loop_name)
 		_expect(loop_stream.loop_end > loop_stream.loop_begin, "%s loop should have a non-empty range" % loop_name)
+
+	if main.sound_streams.has("martinshorn") and main.sound_streams["martinshorn"] is AudioStreamSample:
+		_test_martinshorn_sample(main.sound_streams["martinshorn"])
+
+
+func _test_martinshorn_sample(stream: AudioStreamSample):
+	_expect(stream.loop_end == 52920, "Martinshorn should retain an exact 2.4-second seamless loop")
+	_expect(stream.data.size() == 105840, "Martinshorn should contain 52920 mono 16-bit frames")
+	if stream.data.size() < 105840:
+		return
+	var peak = 0
+	for frame in range(stream.loop_end):
+		peak = max(peak, abs(_pcm_frame(stream, frame)))
+	_expect(peak > 8000, "Martinshorn should have a strong pneumatic-horn level")
+	_expect(peak < 32767, "Martinshorn synthesis should retain headroom without clipping")
+	_expect(abs(_pcm_frame(stream, 0)) < 500 and abs(_pcm_frame(stream, stream.loop_end - 1)) < 500, "Martinshorn valve envelopes should close cleanly at the loop boundary")
+
+	var low_435 = _pcm_tone_power(stream, 435.0, 0.14, 0.30)
+	var low_450 = _pcm_tone_power(stream, 450.0, 0.14, 0.30)
+	var low_high_pair = _pcm_tone_power(stream, 580.0, 0.14, 0.30) + _pcm_tone_power(stream, 600.0, 0.14, 0.30)
+	var high_580 = _pcm_tone_power(stream, 580.0, 0.74, 0.30)
+	var high_600 = _pcm_tone_power(stream, 600.0, 0.74, 0.30)
+	var high_low_pair = _pcm_tone_power(stream, 435.0, 0.74, 0.30) + _pcm_tone_power(stream, 450.0, 0.74, 0.30)
+	_expect(low_435 + low_450 > low_high_pair * 3.0, "low Martinshorn note should contain its 435/450 Hz horn pair")
+	_expect(high_580 + high_600 > high_low_pair * 3.0, "high Martinshorn note should contain its 580/600 Hz horn pair")
+	_expect(low_450 > low_435 * 0.15, "low Martinshorn note should retain the second bell that creates natural beating")
+	_expect(high_600 > high_580 * 0.15, "high Martinshorn note should retain the second bell that creates natural beating")
+	var plateau_rms = _pcm_rms(stream, 0.18, 0.20)
+	var valve_rms = _pcm_rms(stream, 0.592, 0.016)
+	_expect(valve_rms < plateau_rms * 0.72, "Martinshorn note change should include a brief pneumatic valve dip")
+
+
+func _pcm_frame(stream: AudioStreamSample, frame: int) -> int:
+	var byte_index = frame * 2
+	var raw = int(stream.data[byte_index]) | (int(stream.data[byte_index + 1]) << 8)
+	return raw - 65536 if raw >= 32768 else raw
+
+
+func _pcm_rms(stream: AudioStreamSample, start_seconds: float, duration: float) -> float:
+	var start_frame = int(start_seconds * stream.mix_rate)
+	var frame_count = int(duration * stream.mix_rate)
+	var energy = 0.0
+	for frame_offset in range(frame_count):
+		var value = float(_pcm_frame(stream, start_frame + frame_offset)) / 32768.0
+		energy += value * value
+	return sqrt(energy / float(max(1, frame_count)))
+
+
+func _pcm_tone_power(stream: AudioStreamSample, frequency: float, start_seconds: float, duration: float) -> float:
+	var start_frame = int(start_seconds * stream.mix_rate)
+	var frame_count = int(duration * stream.mix_rate)
+	var sine_sum = 0.0
+	var cosine_sum = 0.0
+	for frame_offset in range(frame_count):
+		var window = 0.5 - cos(PI * 2.0 * float(frame_offset) / float(max(1, frame_count - 1))) * 0.5
+		var sample_value = float(_pcm_frame(stream, start_frame + frame_offset)) / 32768.0 * window
+		var phase = PI * 2.0 * frequency * float(frame_offset) / float(stream.mix_rate)
+		sine_sum += sample_value * sin(phase)
+		cosine_sum += sample_value * cos(phase)
+	return sine_sum * sine_sum + cosine_sum * cosine_sum
 
 
 func _make_training_target(main, position: Vector3) -> StaticBody:
@@ -299,6 +360,7 @@ func _test_hlf_fire_engine(main):
 	# Keep the factory/destruction checks well away from the player and the patrol
 	# car created above while exercising the same runtime path as a real dispatch.
 	var remote_position = main.player.global_transform.origin + Vector3(-220, 0, 220)
+	remote_position.y = main.HLF_GROUND_HEIGHT
 	var fire_engine = main.create_emergency_vehicle("fire", remote_position)
 	_expect(is_instance_valid(fire_engine), "fire-vehicle factory should return an HLF")
 	if not is_instance_valid(fire_engine):
@@ -313,6 +375,8 @@ func _test_hlf_fire_engine(main):
 
 	var visual = fire_engine.get_node_or_null("HLFVisual")
 	_expect(is_instance_valid(visual), "HLF should contain its imported-model visual wrapper")
+	var tire_contact_y = main.HLF_GROUND_HEIGHT + main.HLF_VISUAL_OFFSET.y + main.HLF_TIRE_BOTTOM_LOCAL_Y
+	_expect(abs(tire_contact_y - 0.045) < 0.0001, "HLF tires should sit slightly into every visible road surface without a gap")
 	var model = visual.get_node_or_null("HLFModel") if is_instance_valid(visual) else null
 	_expect(is_instance_valid(model), "HLF visual wrapper should contain the imported HLF model")
 
@@ -331,6 +395,8 @@ func _test_hlf_fire_engine(main):
 	_expect(is_instance_valid(collider) and collider.shape is BoxShape, "HLF should retain a direct box collider")
 	if is_instance_valid(collider) and collider.shape is BoxShape:
 		_expect(collider.shape.extents == Vector3(1.15, 1.25, 3.70), "HLF collider should match the imported model bounds")
+		var collider_bottom = main.HLF_GROUND_HEIGHT + collider.translation.y - collider.shape.extents.y
+		_expect(abs(collider_bottom) < 0.0001, "HLF collider should physically rest on the colliding ground")
 
 	var engine_audio = fire_engine.get_node_or_null("EngineAudio")
 	var martinshorn_audio = fire_engine.get_node_or_null("MartinshornAudio")
@@ -362,6 +428,53 @@ func _test_hlf_fire_engine(main):
 	if martinshorn_audio is AudioStreamPlayer3D:
 		_expect(martinshorn_audio.playing, "en-route HLF state should resume its Martinshorn loop")
 
+	# Exercise the real arrival branch at a distance where another response vehicle
+	# can physically stop the long HLF. Arrival must stop the horn before deploying.
+	fire_engine.rotation_degrees.y = 90.0
+	var incident = fire_engine.global_transform.origin + Vector3(0, 0, 18)
+	var operation_count_before = main.firefighting_operations.size()
+	var arrival_response = {
+		"node": fire_engine,
+		"kind": "fire",
+		"target": fire_engine.translation + Vector3(5.5, 0, 0),
+		"incident": incident,
+		"arrived": false
+	}
+	main.emergency_vehicles.append(arrival_response)
+	main.update_emergency_vehicles(1.0 / 60.0)
+	_expect(arrival_response.arrived, "HLF should finish its arrival within its collision-aware six-metre radius")
+	if martinshorn_audio is AudioStreamPlayer3D:
+		_expect(not martinshorn_audio.playing, "HLF arrival must stop the Martinshorn before deploying firefighters")
+	var operation = main.firefighting_operations[operation_count_before].root if main.firefighting_operations.size() > operation_count_before else null
+	_expect(is_instance_valid(operation), "HLF arrival should create a firefighting operation")
+	if is_instance_valid(operation):
+		_expect(main.firefighting_operations.size() == operation_count_before + 1, "active firefighting operation should be tracked")
+		_expect(is_equal_approx(float(operation.get_meta("duration_seconds")), 300.0), "fire suppression should last exactly five minutes")
+		var timer = operation.get_node_or_null("SuppressionTimer")
+		_expect(timer is Timer and is_equal_approx(timer.wait_time, 300.0), "fire suppression timer should wait 300 seconds")
+		if timer is Timer:
+			_expect(not timer.is_stopped(), "five-minute suppression timer should start on arrival")
+		var nozzle_operator = operation.get_node_or_null("FirefighterNozzle")
+		var backup = operation.get_node_or_null("FirefighterBackup")
+		_expect(nozzle_operator is Spatial and backup is Spatial, "fire response should deploy a two-person hose crew")
+		if nozzle_operator is Spatial and backup is Spatial:
+			var operator_local = fire_engine.to_local(nozzle_operator.global_transform.origin)
+			var backup_local = fire_engine.to_local(backup.global_transform.origin)
+			_expect(abs(operator_local.x) > 1.75 and abs(backup_local.x) > 1.75, "firefighters should stand clear beside the HLF, never beneath it")
+			_expect(sign(operator_local.x) == sign(backup_local.x), "two-person hose crew should deploy together on the incident side")
+		_expect(operation.get_node_or_null("AttackHose") is Spatial, "firefighters should deploy a visible, thick attack hose")
+		_expect(operation.get_node_or_null("WaterSpray") is ImmediateGeometry, "nozzle should emit a continuous visible water stream")
+		var first_droplet = operation.get_node_or_null("WaterDroplet00")
+		var droplet_position_before = first_droplet.global_transform.origin if first_droplet is Spatial else Vector3.ZERO
+		main.update_firefighting_operations(0.25)
+		_expect(float(operation.get_meta("elapsed_seconds")) >= 0.25, "firefighting effect should advance throughout the five-minute operation")
+		if first_droplet is Spatial:
+			_expect(first_droplet.global_transform.origin.distance_to(droplet_position_before) > 0.1, "water droplets should visibly travel from nozzle to incident")
+		main.extinguish_fire(incident, operation)
+		_expect(operation.is_queued_for_deletion(), "completed suppression should clean up crew, hose, and spray together")
+		_expect(main.firefighting_operations.size() == operation_count_before, "completed suppression should leave no stale operation state")
+	main.emergency_vehicles.erase(arrival_response)
+
 	main.damage_vehicle(fire_engine, 300)
 	_expect(bool(fire_engine.get_meta("destroyed")), "lethal damage should mark the HLF destroyed")
 	for flash_light in [front_flash, rear_flash_left, rear_flash_right]:
@@ -371,6 +484,47 @@ func _test_hlf_fire_engine(main):
 		_expect(not engine_audio.playing, "destroying the HLF should stop its engine loop")
 	if martinshorn_audio is AudioStreamPlayer3D:
 		_expect(not martinshorn_audio.playing, "destroying the HLF should stop its Martinshorn loop")
+
+
+func _test_combined_emergency_dispatch(main):
+	# A collapsed building dispatches fire and police back-to-back. Their original
+	# route variants were identical, which spawned the first patrol car inside the
+	# HLF and later blocked its arrival state.
+	var marker = Spatial.new()
+	main.destroyed_buildings.append(marker)
+	var previous_police_dispatch_count = main.police_dispatch_count
+	main.police_dispatch_count = 0
+	var response_count_before = main.emergency_vehicles.size()
+	var incident = Vector3(45, 0, 45)
+	main.dispatch_fire_department(incident)
+	main.dispatch_police(incident, 2)
+	_expect(main.emergency_vehicles.size() == response_count_before + 3, "combined incident should dispatch one HLF and two patrol cars")
+	if main.emergency_vehicles.size() >= response_count_before + 3:
+		var fire_response = main.emergency_vehicles[response_count_before]
+		var first_police_response = main.emergency_vehicles[response_count_before + 1]
+		var fire_vehicle = fire_response.node
+		var police_vehicle = first_police_response.node
+		var travel = fire_response.target - fire_vehicle.translation
+		travel.y = 0.0
+		if travel.length_squared() > 0.0001:
+			travel = travel.normalized()
+			var lane_right = Vector3(-travel.z, 0.0, travel.x)
+			var spawn_separation = police_vehicle.translation - fire_vehicle.translation
+			var target_separation = first_police_response.target - fire_response.target
+			_expect(abs(spawn_separation.dot(lane_right)) >= 2.9, "first patrol car should spawn in a separate lane beside the HLF")
+			_expect(abs(target_separation.dot(lane_right)) >= 2.9, "first patrol car should retain its separate lane at the incident")
+			var fire_forward = -fire_vehicle.global_transform.basis.z.normalized()
+			_expect(fire_forward.dot(travel) > 0.99, "HLF should spawn already aligned with its route to avoid collision recovery")
+
+	for response_index in range(main.emergency_vehicles.size() - 1, response_count_before - 1, -1):
+		var response = main.emergency_vehicles[response_index]
+		if is_instance_valid(response.node):
+			main.stop_fire_engine_audio(response.node)
+			response.node.queue_free()
+		main.emergency_vehicles.remove(response_index)
+	main.destroyed_buildings.erase(marker)
+	marker.free()
+	main.police_dispatch_count = previous_police_dispatch_count
 
 
 func _test_hlf_beacon(beacon, location: String):
@@ -407,7 +561,11 @@ func _test_hlf_loop_audio(audio, expected_stream, label: String):
 	_expect(audio.stream == expected_stream and expected_stream != null, "HLF %s audio should use its registered sound stream" % label)
 	_expect(audio.playing, "HLF %s audio loop should start with the vehicle" % label)
 	_expect(audio.unit_size > 1.0, "HLF %s audio should use deliberate long-range attenuation" % label)
-	_expect(audio.out_of_range_mode == AudioStreamPlayer3D.OUT_OF_RANGE_PAUSE, "HLF %s audio should pause mixing outside its audible range" % label)
+	var expected_range_mode = AudioStreamPlayer3D.OUT_OF_RANGE_MIX if label == "Martinshorn" else AudioStreamPlayer3D.OUT_OF_RANGE_PAUSE
+	_expect(audio.out_of_range_mode == expected_range_mode, "HLF %s audio should use its intended long-range loop mode" % label)
+	if label == "Martinshorn":
+		_expect(audio.doppler_tracking == AudioStreamPlayer3D.DOPPLER_TRACKING_PHYSICS_STEP, "Martinshorn should use physics-step Doppler tracking while the HLF moves")
+		_expect(audio.emission_angle_enabled and audio.emission_angle_degrees >= 75.0, "Martinshorn should use a broad forward-facing horn pattern")
 	if audio.stream is AudioStreamSample:
 		_expect(audio.stream.loop_mode == AudioStreamSample.LOOP_FORWARD, "HLF %s audio stream should loop forward" % label)
 
