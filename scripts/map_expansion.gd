@@ -9,6 +9,7 @@ const MAP_HALF_EXTENT := 700.0
 const OUTER_STRIP_CENTER := 480.0
 const OUTER_STRIP_DEPTH := 440.0
 const ROAD_LEVEL := 0.026
+const MAX_COLLISION_TILE_SIZE := 180.0
 
 var _built := false
 var _materials := {}
@@ -131,7 +132,9 @@ func _build_roads_and_walkways():
 
 
 func _add_road(parent: Node, road_name: String, position: Vector3, size: Vector3, horizontal: bool):
-	_add_visual_box(parent, road_name, position, size, _materials["asphalt"])
+	var road_body = _add_static_box(parent, road_name, position, size, _materials["asphalt"])
+	road_body.set_meta("surface_grip", 1.02)
+	road_body.set_meta("rolling_resistance", 1.0)
 	var start = -680.0
 	while start <= 680.0:
 		var marker_position = Vector3(start, position.y + 0.035, position.z) if horizontal else Vector3(position.x, position.y + 0.035, start)
@@ -286,13 +289,37 @@ func _add_static_box(parent: Node, node_name: String, position: Vector3, size: V
 	mesh.material = material
 	mesh_instance.mesh = mesh
 	body.add_child(mesh_instance)
-	var collision_shape = CollisionShape.new()
-	collision_shape.name = "CollisionShape"
-	var shape = BoxShape.new()
-	shape.extents = size * 0.5
-	collision_shape.shape = shape
-	body.add_child(collision_shape)
+	_add_tiled_box_collisions(body, size)
+	if material == _materials.get("grass", null):
+		body.set_meta("surface_grip", 0.52)
+		body.set_meta("rolling_resistance", 2.4)
+	elif material == _materials.get("sidewalk", null) or material == _materials.get("curb", null):
+		body.set_meta("surface_grip", 0.78)
+		body.set_meta("rolling_resistance", 1.35)
 	return body
+
+
+func _add_tiled_box_collisions(body: StaticBody, size: Vector3):
+	# Bullet ray tests lose precision on kilometre-long boxes.  Several small
+	# shapes keep the visible mesh unchanged while giving the tires exact hits.
+	var tile_count_x = max(1, int(ceil(size.x / MAX_COLLISION_TILE_SIZE)))
+	var tile_count_z = max(1, int(ceil(size.z / MAX_COLLISION_TILE_SIZE)))
+	var tile_size = Vector3(size.x / tile_count_x, size.y, size.z / tile_count_z)
+	var shape_index := 0
+	for tile_x in range(tile_count_x):
+		for tile_z in range(tile_count_z):
+			var collision_shape = CollisionShape.new()
+			collision_shape.name = "CollisionShape" if shape_index == 0 else "CollisionShape_%03d" % shape_index
+			collision_shape.translation = Vector3(
+				-size.x * 0.5 + tile_size.x * (float(tile_x) + 0.5),
+				0.0,
+				-size.z * 0.5 + tile_size.z * (float(tile_z) + 0.5)
+			)
+			var shape = BoxShape.new()
+			shape.extents = tile_size * 0.5
+			collision_shape.shape = shape
+			body.add_child(collision_shape)
+			shape_index += 1
 
 
 func _add_visual_box(parent: Node, node_name: String, position: Vector3, size: Vector3, material) -> MeshInstance:

@@ -35,13 +35,24 @@ func _render_preview():
 	ground_mesh.material = ground_material
 	ground.mesh = ground_mesh
 	stage.add_child(ground)
+	var ground_body = StaticBody.new()
+	ground_body.name = "PreviewGround"
+	ground_body.translation.y = -0.20
+	ground_body.set_meta("surface_grip", 1.02)
+	stage.add_child(ground_body)
+	var ground_collider = CollisionShape.new()
+	var ground_shape = BoxShape.new()
+	ground_shape.extents = Vector3(8, 0.20, 8)
+	ground_collider.shape = ground_shape
+	ground_body.add_child(ground_collider)
 
 	var helper = MAIN_SCRIPT.new()
-	var normal_golf = KinematicBody.new()
+	var normal_golf = helper.PLAYER_VEHICLE_SCENE.instance()
 	normal_golf.translation = Vector3(-2.25, helper.GOLF_GROUND_HEIGHT, 0)
 	stage.add_child(normal_golf)
-	helper.add_golf_visual(normal_golf)
-	helper.add_golf_collision(normal_golf)
+	var normal_visual = helper.add_golf_visual(normal_golf)
+	normal_golf.bind_wheel_visuals(normal_visual.get_node_or_null("Golf7Model"), helper.GOLF_VISUAL_SCALE)
+	normal_golf.set_driver_active(false)
 
 	var police_golf = helper.create_emergency_vehicle("police", Vector3(2.25, helper.GOLF_GROUND_HEIGHT, 0))
 	helper.remove_child(police_golf)
@@ -54,13 +65,17 @@ func _render_preview():
 	camera.fov = 48.0
 	stage.add_child(camera)
 
-	for _frame in range(4):
-		yield(self, "idle_frame")
+	for _frame in range(150):
+		yield(self, "physics_frame")
+	yield(self, "idle_frame")
 	VisualServer.sync()
 	var image = get_root().get_texture().get_data()
 	image.flip_y()
 	var error = image.save_png("/tmp/golf7_preview.png")
 	if error == OK:
+		stage.queue_free()
+		helper.free()
+		yield(self, "idle_frame")
 		print("PASS: rendered Golf7 preview")
 		quit(0)
 	else:

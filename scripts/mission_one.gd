@@ -652,7 +652,9 @@ func build_push_crate():
 	push_crate.name = "MissionPuzzleCrate"
 	push_crate.translation = CRATE_START
 	push_crate.mass = 16.0
-	push_crate.linear_damp = 4.5
+	# The project uses zero world damping so vehicle drag can be calibrated in
+	# physical units. Preserve the crate's former effective 4.6 damping here.
+	push_crate.linear_damp = 4.6
 	push_crate.angular_damp = 8.0
 	push_crate.axis_lock_linear_y = true
 	push_crate.axis_lock_angular_x = true

@@ -4,6 +4,7 @@ const BERLIN_MAP_SCENE = preload("res://scenes/BerlinMap.tscn")
 const HUMAN_SCENE = preload("res://Assets/HumanV2.glb")
 const GOLF_SCENE = preload("res://Assets/Golf7ModelV3.glb")
 const HLF_SCENE = preload("res://Assets/Vehicles/Feuerwehr_HLF.glb")
+const PLAYER_VEHICLE_SCENE = preload("res://scenes/PlayerVehicle.tscn")
 const MISSION_ONE_SCRIPT = preload("res://scripts/mission_one.gd")
 const MAP_EXPANSION_SCRIPT = preload("res://scripts/map_expansion.gd")
 const GOLF_VISUAL_SCALE = 0.65
@@ -12,7 +13,7 @@ const GOLF_COLLIDER_EXTENTS = Vector3(1.06, 0.72, 2.14)
 const GOLF_GROUND_HEIGHT = 0.72
 const HLF_VISUAL_OFFSET = Vector3(0.0, -0.5318517, -2.654151)
 const HLF_COLLIDER_EXTENTS = Vector3(1.15, 1.25, 3.70)
-const HLF_COLLIDER_OFFSET = Vector3(0.0, 0.68, 0.0)
+const HLF_COLLIDER_OFFSET = Vector3(0.0, 0.73, 0.0)
 const HLF_TIRE_BOTTOM_LOCAL_Y = 0.00685
 const HLF_ROAD_SURFACE_Y = 0.05
 const HLF_GROUND_HEIGHT = 0.57
@@ -29,7 +30,6 @@ const FIREFIGHTER_FOOT_HEIGHT = 0.07
 const WATER_SPRAY_SEGMENTS = 14
 const WATER_DROPLET_COUNT = 7
 const WALK_SPEED = 8.0
-const DRIVE_SPEED = 22.0
 const GRAVITY = 24.0
 const POLICE_SPEED = 16.0
 const OFFICER_SPEED = 5.2
@@ -50,7 +50,7 @@ enum PlayerDeathPhase {
 var player: KinematicBody
 var player_collider: CollisionShape
 var camera: Camera
-var car: KinematicBody
+var car: RigidBody
 var car_body: Spatial
 var weapon_pivot: Spatial
 var pistol_model: Spatial
@@ -109,6 +109,7 @@ func _ready():
 	build_world()
 	map_expansion = MAP_EXPANSION_SCRIPT.new()
 	map_expansion.setup(self)
+	configure_driving_surfaces()
 	build_player()
 	build_car()
 	build_npcs()
@@ -427,13 +428,15 @@ func tag_destructible_buildings(node: Node):
 		tag_destructible_buildings(child)
 
 func build_car():
-	car = KinematicBody.new()
+	car = PLAYER_VEHICLE_SCENE.instance()
 	car.name = "Car"
 	car.translation = Vector3(2.8, 8, -4)
 	register_damageable_vehicle(car, 100, "player_car")
 	car_body = add_golf_visual(car)
-	add_golf_collision(car)
 	add_child(car)
+	car.bind_wheel_visuals(car_body.get_node_or_null("Golf7Model"), GOLF_VISUAL_SCALE)
+	car.set_driver_active(false)
+	car.connect("hard_impact", self, "_on_car_hard_impact")
 	call_deferred("place_car_on_ground")
 
 func add_golf_visual(parent: Node, police_variant := false) -> Spatial:
@@ -471,12 +474,13 @@ func configure_golf_materials(node: Node, police_variant: bool):
 	for child in node.get_children():
 		configure_golf_materials(child, police_variant)
 
-func add_golf_collision(vehicle: KinematicBody) -> CollisionShape:
+func add_golf_collision(vehicle: PhysicsBody) -> CollisionShape:
 	var collider = CollisionShape.new()
 	collider.name = "CollisionShape"
 	var shape = BoxShape.new()
 	shape.extents = GOLF_COLLIDER_EXTENTS
 	collider.shape = shape
+	collider.translation.y = HLF_ROAD_SURFACE_Y
 	vehicle.add_child(collider)
 	return collider
 
@@ -640,7 +644,101 @@ func place_car_on_ground():
 		excluded
 	)
 	if hit:
-		car.translation.y = hit.position.y + GOLF_GROUND_HEIGHT
+		var target_transform = car.global_transform
+		target_transform.origin.y = hit.position.y + GOLF_GROUND_HEIGHT
+		teleport_vehicle(car, target_transform)
+
+func teleport_vehicle(vehicle, target_transform: Transform, reset_motion := true):
+	if not is_instance_valid(vehicle):
+		return
+	if vehicle.has_method("teleport_to"):
+		vehicle.teleport_to(target_transform, reset_motion)
+	else:
+		vehicle.global_transform = target_transform
+		if reset_motion and vehicle is RigidBody:
+			vehicle.linear_velocity = Vector3.ZERO
+			vehicle.angular_velocity = Vector3.ZERO
+
+func configure_driving_surfaces():
+	var berlin_map = get_node_or_null("BerlinMap")
+	if not berlin_map:
+		return
+	var ground = berlin_map.get_node_or_null("Ground")
+	if ground:
+		ground.set_meta("surface_grip", 0.52)
+		ground.set_meta("rolling_resistance", 2.4)
+		_tile_large_static_box(ground)
+	for road in berlin_map.get_children():
+		if not (road.name.begins_with("Road_X_") or road.name.begins_with("Road_Z_")):
+			continue
+		if road.has_node("SurfaceCollider"):
+			continue
+		var mesh_instance = road.get_node_or_null("Mesh")
+		if not (mesh_instance is MeshInstance) or not (mesh_instance.mesh is CubeMesh):
+			continue
+		var surface_body = StaticBody.new()
+		surface_body.name = "SurfaceCollider"
+		surface_body.set_meta("surface_grip", 1.02)
+		surface_body.set_meta("rolling_resistance", 1.0)
+		road.add_child(surface_body)
+		var surface_collider = CollisionShape.new()
+		surface_collider.name = "CollisionShape"
+		var road_size = mesh_instance.mesh.size
+		var segment_count = max(1, int(ceil(max(road_size.x, road_size.z) / 180.0)))
+		var segment_size = road_size
+		if road_size.x >= road_size.z:
+			segment_size.x /= segment_count
+		else:
+			segment_size.z /= segment_count
+		for segment_index in range(segment_count):
+			var segment_collider = surface_collider if segment_index == 0 else CollisionShape.new()
+			segment_collider.name = "CollisionShape" if segment_index == 0 else "CollisionShape_%02d" % segment_index
+			var long_offset = -max(road_size.x, road_size.z) * 0.5 + max(segment_size.x, segment_size.z) * (float(segment_index) + 0.5)
+			segment_collider.translation = Vector3(long_offset, 0, 0) if road_size.x >= road_size.z else Vector3(0, 0, long_offset)
+			var road_shape = BoxShape.new()
+			road_shape.extents = segment_size * 0.5
+			segment_collider.shape = road_shape
+			surface_body.add_child(segment_collider)
+	_tag_static_surfaces(berlin_map)
+	if map_expansion:
+		_tag_static_surfaces(map_expansion)
+
+func _tile_large_static_box(body: StaticBody, max_tile_size := 180.0):
+	var source_collider = body.get_node_or_null("CollisionShape")
+	if not (source_collider is CollisionShape) or not (source_collider.shape is BoxShape):
+		return
+	var source_size = source_collider.shape.extents * 2.0
+	var tile_count_x = max(1, int(ceil(source_size.x / max_tile_size)))
+	var tile_count_z = max(1, int(ceil(source_size.z / max_tile_size)))
+	if tile_count_x == 1 and tile_count_z == 1:
+		return
+	var tile_size = Vector3(source_size.x / tile_count_x, source_size.y, source_size.z / tile_count_z)
+	source_collider.disabled = true
+	for tile_x in range(tile_count_x):
+		for tile_z in range(tile_count_z):
+			var tile_collider = CollisionShape.new()
+			tile_collider.name = "DrivingCollisionTile_%02d_%02d" % [tile_x, tile_z]
+			tile_collider.translation = source_collider.translation + Vector3(
+				-source_size.x * 0.5 + tile_size.x * (float(tile_x) + 0.5),
+				0.0,
+				-source_size.z * 0.5 + tile_size.z * (float(tile_z) + 0.5)
+			)
+			var tile_shape = BoxShape.new()
+			tile_shape.extents = tile_size * 0.5
+			tile_collider.shape = tile_shape
+			body.add_child(tile_collider)
+
+func _tag_static_surfaces(node: Node):
+	if node is StaticBody and not node.has_meta("surface_grip"):
+		var lower_name = node.name.to_lower()
+		if lower_name.find("sidewalk") >= 0 or lower_name.find("walk") >= 0:
+			node.set_meta("surface_grip", 0.78)
+			node.set_meta("rolling_resistance", 1.35)
+		elif lower_name.find("ground") >= 0:
+			node.set_meta("surface_grip", 0.52)
+			node.set_meta("rolling_resistance", 2.4)
+	for child in node.get_children():
+		_tag_static_surfaces(child)
 
 func build_npcs():
 	var positions = [Vector3(-5, 8, -8), Vector3(8, 8, 5), Vector3(-8, 8, 12)]
@@ -778,6 +876,10 @@ func _physics_process(delta):
 			drive(delta)
 		else:
 			walk(delta)
+	elif in_car and is_instance_valid(car):
+		car.set_driver_active(false)
+	if in_car:
+		sync_player_to_car()
 	update_emergency_vehicles(delta)
 	update_police_officers(delta)
 	update_vehicle_fires(delta)
@@ -811,38 +913,28 @@ func walk(delta):
 	velocity = player.move_and_slide(velocity, Vector3.UP, false, 4, deg2rad(46), true)
 
 func drive(delta):
-	var input = input_vector()
-	var throttle = -input.y
+	var forward_input = Input.get_action_strength("move_forward")
+	var reverse_input = Input.get_action_strength("move_back")
+	var steering = Input.get_action_strength("move_right") - Input.get_action_strength("move_left")
+	var handbrake = Input.get_action_strength("vehicle_handbrake")
+	var forward_speed = car.get_forward_speed()
+	var throttle = 0.0
+	var brake = 0.0
+	if forward_input > 0.01:
+		if forward_speed < -0.7:
+			brake = forward_input
+		else:
+			throttle = forward_input
+	elif reverse_input > 0.01:
+		if forward_speed > 0.7:
+			brake = reverse_input
+		else:
+			throttle = -reverse_input
 	if car_fuel <= 0.0 or car_health <= 0:
 		throttle = 0.0
 	consume_car_fuel(throttle, delta)
-	var acceleration = 15.0 if throttle >= 0 else 22.0
-	if abs(throttle) > 0.05:
-		car_speed = move_toward(car_speed, throttle * DRIVE_SPEED, acceleration * delta)
-	else:
-		car_speed = move_toward(car_speed, 0.0, 7.0 * delta)
-	# Steering is weaker at a standstill and reverses naturally when backing up.
-	var steering_strength = clamp(abs(car_speed) / 5.0, 0.18, 1.0)
-	if abs(input.x) > 0.03:
-		car.rotate_y(-input.x * delta * 1.65 * steering_strength * sign(car_speed if abs(car_speed) > 0.2 else 1.0))
-	var forward = -car.global_transform.basis.z.normalized()
-	# Gravity projected along the car's nose makes hills affect acceleration.
-	car_speed += Vector3.DOWN.dot(forward) * 9.0 * delta
-	var motion = forward * car_speed + Vector3.DOWN * 5.0
-	var previous_position = car.global_transform.origin
-	var impact_speed = abs(car_speed)
-	car.move_and_slide(motion, Vector3.UP, true, 4, deg2rad(48))
-	var hit_obstacle = false
-	for collision_index in range(car.get_slide_count()):
-		var collision = car.get_slide_collision(collision_index)
-		if collision and abs(collision.normal.y) < 0.55:
-			hit_obstacle = true
-	if hit_obstacle and car.global_transform.origin.distance_to(previous_position) < impact_speed * delta * 0.35:
-		car_speed *= 0.45
-		apply_car_impact_damage(impact_speed)
-	align_car_to_ground(delta)
-	player.global_transform = car.global_transform
-	player.translation.y += 1.2
+	car.set_driver_input(throttle, steering, brake, handbrake)
+	car_speed = car.get_forward_speed()
 	update_status()
 
 func consume_car_fuel(throttle: float, delta: float):
@@ -859,32 +951,36 @@ func apply_car_impact_damage(impact_speed: float) -> int:
 	update_status()
 	return damage
 
-func align_car_to_ground(delta):
-	var origin = car.global_transform.origin
-	var hit = get_world().direct_space_state.intersect_ray(origin + Vector3.UP * 2.0, origin + Vector3.DOWN * 3.5, [car, player])
-	if not hit:
+func sync_player_to_car():
+	if not is_instance_valid(car) or not is_instance_valid(player):
 		return
-	var normal = hit.normal.normalized()
-	var forward = -car.global_transform.basis.z
-	forward = (forward - normal * forward.dot(normal)).normalized()
-	if forward.length() < 0.1:
-		return
-	var right = forward.cross(normal).normalized()
-	var target_basis = Basis(right, normal, -forward).orthonormalized()
-	var current_quat = Quat(car.global_transform.basis.orthonormalized())
-	var target_quat = Quat(target_basis)
-	var transform = car.global_transform
-	transform.basis = Basis(current_quat.slerp(target_quat, clamp(delta * 7.0, 0.0, 1.0)))
-	car.global_transform = transform
+	var occupant_basis = _upright_car_basis()
+	var occupant_position = car.global_transform.origin + Vector3.UP * 1.2
+	player.global_transform = Transform(occupant_basis, occupant_position)
+
+func _upright_car_basis() -> Basis:
+	var flat_forward = -car.global_transform.basis.z
+	flat_forward.y = 0.0
+	if flat_forward.length_squared() < 0.001:
+		flat_forward = Vector3(0, 0, -1)
+	flat_forward = flat_forward.normalized()
+	var flat_right = flat_forward.cross(Vector3.UP).normalized()
+	return Basis(flat_right, Vector3.UP, -flat_forward).orthonormalized()
+
+func _on_car_hard_impact(impact_speed: float):
+	if car_health > 0:
+		apply_car_impact_damage(impact_speed)
 
 func toggle_car():
 	if in_car:
 		in_car = false
-		player.translation = car.translation + car.global_transform.basis.x * 2.2 + Vector3.UP
+		car.set_driver_active(false)
+		player.translation = car.translation + _upright_car_basis().x * 2.2 + Vector3.UP
 		player_collider.disabled = false
 		car_body.visible = true
 	elif player.global_transform.origin.distance_to(car.global_transform.origin) < 3.5 and not bool(car.get_meta("destroyed")):
 		in_car = true
+		car.set_driver_active(true)
 		set_weapon("")
 		player_collider.disabled = true
 	update_status()
@@ -1023,6 +1119,7 @@ func eject_casing(weapon: String):
 	var casing = RigidBody.new()
 	casing.name = "RifleCasing" if weapon == "rifle" else "PistolCasing"
 	casing.mass = 0.02
+	casing.linear_damp = 0.1
 	add_child(casing)
 	var position = camera.global_transform.origin + camera.global_transform.basis.x * 0.28 + camera.global_transform.basis.y * -0.10 + -camera.global_transform.basis.z * 0.38
 	var casing_transform = Transform(Basis(), position)
@@ -1149,9 +1246,11 @@ func destroy_vehicle(vehicle, create_blast := true):
 	if vehicle == car:
 		car_health = 0
 		car_speed = 0.0
+		car.freeze_as_wreck()
 		if in_car:
 			in_car = false
-			player.global_transform = Transform(car.global_transform.basis, car.global_transform.origin + car.global_transform.basis.x * 2.8 + Vector3.UP)
+			var exit_basis = _upright_car_basis()
+			player.global_transform = Transform(exit_basis, car.global_transform.origin + exit_basis.x * 2.8 + Vector3.UP)
 			player_collider.disabled = false
 			set_weapon("")
 			damage_player(35)
@@ -1607,14 +1706,15 @@ func start_player_death():
 	player_health = 0
 	velocity = Vector3.ZERO
 	car_speed = 0.0
+	if is_instance_valid(car):
+		car.set_driver_active(false)
 	if mission_one and mission_one.is_overlay_open():
 		mission_one.close_dialogue()
 	if in_car:
 		in_car = false
-		var exit_position = car.global_transform.origin + car.global_transform.basis.x * 2.6 + Vector3.UP * 0.8
-		var car_yaw = car.rotation_degrees.y
-		player.global_transform = Transform(Basis(), exit_position)
-		player.rotation_degrees.y = car_yaw
+		var exit_basis = _upright_car_basis()
+		var exit_position = car.global_transform.origin + exit_basis.x * 2.6 + Vector3.UP * 0.8
+		player.global_transform = Transform(exit_basis, exit_position)
 	else:
 		player.rotation_degrees = Vector3(0, player.rotation_degrees.y, 0)
 	if is_instance_valid(player_collider) and not player_collider.disabled:
@@ -1953,5 +2053,8 @@ func update_status():
 		wanted_text = " | FAHNDUNG %s" % stars
 	var vehicle_text = ""
 	if in_car:
-		vehicle_text = " | BENZIN %d%% | AUTO %d%%" % [int(ceil(car_fuel)), car_health]
+		var speed_kph = int(round(car.get_speed_kph())) if is_instance_valid(car) else int(round(abs(car_speed) * 3.6))
+		var gear = car.get_current_gear() if is_instance_valid(car) else 0
+		var gear_text = "R" if gear < 0 else str(gear)
+		vehicle_text = " | %d km/h · GANG %s | BENZIN %d%% | AUTO %d%%" % [speed_kph, gear_text, int(ceil(car_fuel)), car_health]
 	status.text = ("IM AUTO" if in_car else "ZU FUSS") + " | HP %d%s%s | Waffe: %s%s" % [player_health, vehicle_text, wanted_text, weapon_name, ammo_text]

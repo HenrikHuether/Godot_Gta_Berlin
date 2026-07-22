@@ -17,6 +17,7 @@ func _run():
 	yield(self, "physics_frame")
 	main.set_physics_process(false)
 	main.set_process(false)
+	main.car.set_simulation_enabled(false)
 	_expect(is_instance_valid(main.player_collider), "main should retain a direct reference to the player collider")
 	_expect(
 		main.player.get_node_or_null("CollisionShape") == main.player_collider,
@@ -348,7 +349,15 @@ func _test_golf_vehicle_visual(vehicle, police_variant: bool):
 	var collider = vehicle.get_node_or_null("CollisionShape")
 	_expect(is_instance_valid(collider) and collider.shape is BoxShape, "Golf7 vehicle should retain a simple box collider")
 	if is_instance_valid(collider) and collider.shape is BoxShape:
-		_expect(collider.shape.extents == Vector3(1.06, 0.72, 2.14), "Golf7 collider should match the scaled model bounds")
+		if police_variant:
+			_expect(collider.shape.extents == Vector3(1.06, 0.72, 2.14), "police Golf collider should match the scaled model bounds")
+		else:
+			_expect(vehicle is RigidBody, "player Golf should use force-based RigidBody physics")
+			_expect(collider.shape.extents == Vector3(1.0, 0.58, 2.07), "player Golf chassis collider should leave room for suspension travel")
+			_expect(is_equal_approx(collider.translation.y, 0.05), "player Golf chassis collider should sit above the virtual tires")
+			for ray_name in ["WheelRay_FL", "WheelRay_FR", "WheelRay_RL", "WheelRay_RR"]:
+				_expect(vehicle.get_node_or_null(ray_name) is RayCast, "player Golf should expose suspension marker %s" % ray_name)
+			_expect(vehicle.has_method("set_driver_input") and vehicle.has_method("get_forward_speed"), "player Golf should expose the vehicle-controller API")
 	if police_variant:
 		_expect(vehicle.get_node_or_null("PoliceDoorLabelLeft") is Label3D, "police Golf should retain its left POLIZEI marking")
 		_expect(vehicle.get_node_or_null("PoliceDoorLabelRight") is Label3D, "police Golf should retain its right POLIZEI marking")
@@ -396,7 +405,7 @@ func _test_hlf_fire_engine(main):
 	if is_instance_valid(collider) and collider.shape is BoxShape:
 		_expect(collider.shape.extents == Vector3(1.15, 1.25, 3.70), "HLF collider should match the imported model bounds")
 		var collider_bottom = main.HLF_GROUND_HEIGHT + collider.translation.y - collider.shape.extents.y
-		_expect(abs(collider_bottom) < 0.0001, "HLF collider should physically rest on the colliding ground")
+		_expect(abs(collider_bottom - main.HLF_ROAD_SURFACE_Y) < 0.0001, "HLF collider should physically rest on the road collider")
 
 	var engine_audio = fire_engine.get_node_or_null("EngineAudio")
 	var martinshorn_audio = fire_engine.get_node_or_null("MartinshornAudio")

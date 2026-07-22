@@ -5,7 +5,10 @@ bildet Berliner Stadtblöcke mit texturierten Gründerzeitfassaden, Straßen, In
 Stadtmobiliar und Landmarken ab. Die NPCs verwenden das riggte Modell `Assets/HumanV2.glb`.
 Eine prozedurale Außenzone erweitert die befahrbare Karte auf 1,4 × 1,4 Kilometer – mit
 Ringstraße, Ausfallstraßen, Gehwegen, Außenbezirken, Beleuchtung und Randbarrieren.
-Spieler- und Polizeiauto verwenden ein farbbasiertes Golf-7-Modell ohne Texturen. Die
+Spieler- und Polizeiauto verwenden ein farbbasiertes Golf-7-Modell ohne Texturen. Das
+Spielerauto besitzt einen eigenen RigidBody-Controller mit vier einzeln berechneten
+Radaufstandspunkten, Federung, Dämpfung, Stabilisatoren, Ackermann-Lenkung,
+Frontantrieb, Automatikgetriebe und kombiniertem Reifen-Grip. Die
 Feuerwehr fährt mit einem maßstäblichen, sauber auf der Straße stehenden HLF samt getrennt
 blinkendem Front- und Heckblaulicht vor. Pistole, Sturmgewehr und Raketenwerfer besitzen
 eigene First-Person-Modelle. Die Fahrphysik
@@ -34,7 +37,7 @@ Alternativ `project.godot` im Godot-Editor öffnen und **F6/F5** drücken.
 
 - **WASD** – laufen bzw. fahren
 - **Maus** – umsehen
-- **Leertaste** – springen
+- **Leertaste** – zu Fuß springen, im Auto die Handbremse betätigen
 - **E** – nahe am goldgelben Golf ein-/aussteigen
 - **1** – Pistole aus-/einrüsten
 - **2** – Raketenwerfer aus-/einrüsten
@@ -68,6 +71,8 @@ ersetzt werden, ohne den Missionsablauf umzubauen.
 godot3 --no-window --audio-driver Dummy --path . --script tests/test_persuasion_evaluator.gd
 godot3 --no-window --audio-driver Dummy --path . --script tests/test_mission_one.gd
 godot3 --no-window --audio-driver Dummy --path . --script tests/test_combat_systems.gd
+godot3 --no-window --audio-driver Dummy --path . --script tests/test_vehicle_controller.gd
+godot3 --no-window --audio-driver Dummy --path . --script tests/benchmark_vehicle.gd
 ```
 
 Der erste Test prüft mehrere friedliche Überzeugungswege, Drohungen, Verneinungen und
@@ -75,12 +80,18 @@ erneute Versuche. Der zweite prüft beide Missionsrouten, die Übergabe sowie Be
 Fahrzeugschaden und Fahndungsanstieg. Der dritte prüft Waffenmodelle, Gewehrtreffer,
 Magazine, Nachladen, Spielerschaden, Torso-Zielpunkt, Sound, Fahrzeugzerstörung und das
 HLF samt Bodenlage, Blaulicht, Audioausstattung und fünfminütigem Schlaucheinsatz. Der
-Missionstest kontrolliert zusätzlich
-Kartengröße und die freie Reichstag-Baufläche.
+Missionstest kontrolliert zusätzlich Kartengröße und die freie Reichstag-Baufläche. Der
+Fahrzeugtest prüft Federkräfte, Reibungskreis, vier belastete Räder, Geradeausfahrt,
+Bremsen und Lenkung. Der separate Kalibrierlauf hält Beschleunigung und Bremsweg in einem
+plausiblen Straßenauto-Fenster.
 
 ## Fahrzeug und Fahndung
 
 - Das Missionsauto verbraucht beim Fahren Benzin.
+- **W/S** steuern getrennt Gas, Betriebsbremse und Rückwärtsfahrt; **A/D** lenken ohne das
+  Gaspedal bei diagonaler Eingabe abzuschwächen. Die Lenkung wird mit dem Tempo begrenzt,
+  **Leertaste** betätigt die Hinterrad-Handbremse.
+- Asphalt, Gehwege und Gras besitzen unterschiedliche Haftung und Rollwiderstände.
 - Harte Kollisionen und Waffentreffer beschädigen Fahrzeuge. Bei 0 % explodieren sie,
   werden zu einem verkohlten Wrack und brennen mit Licht-, Rauch- und Soundeffekt.
 - Bei einem Fahrzeugausfall kann die Mission mit **R** neu begonnen werden.

@@ -14,6 +14,7 @@ func _run():
 	var main = MAIN_SCENE.instance()
 	get_root().add_child(main)
 	yield(self, "idle_frame")
+	main.car.set_simulation_enabled(false)
 
 	_expect(main.mission_one != null, "main should create the Mission 1 controller")
 	_test_expanded_map_and_site_cleanup(main)
@@ -33,6 +34,7 @@ func _run():
 	main.mission_one = hidden_route_mission
 	_test_hidden_route(main, hidden_route_mission)
 	_test_vehicle_and_wanted_systems(main)
+	yield(_test_responder_movement(main), "completed")
 
 	if failures.empty():
 		print("PASS: Mission 1 state flow, expanded map, clear site, vehicle resources, damage, and wanted level")
@@ -51,6 +53,13 @@ func _test_expanded_map_and_site_cleanup(main):
 		_expect(bounds.size.x == 1400.0 and bounds.size.z == 1400.0, "expanded map should cover 1.4 km on both axes")
 		_expect(main.map_expansion.has_node("ExpandedRoadNetwork"), "expanded map should contain its ring and outbound roads")
 		_expect(main.map_expansion.has_node("ExpandedDistricts"), "expanded map should contain outer districts")
+		var ring_road = main.map_expansion.get_node_or_null("ExpandedRoadNetwork/RingNorth")
+		_expect(ring_road is StaticBody and ring_road.has_meta("surface_grip"), "expanded asphalt should provide a tagged physics surface")
+		_expect(ring_road.get_node_or_null("CollisionShape") is CollisionShape, "long roads should preserve their primary collider path")
+		if ring_road:
+			for child in ring_road.get_children():
+				if child is CollisionShape and child.shape is BoxShape:
+					_expect(max(child.shape.extents.x, child.shape.extents.z) <= 90.1, "large map surfaces should use Bullet-safe collision tiles")
 	for incident in [Vector3(650, 0, 0), Vector3(650, 0, 650)]:
 		for variant in range(2):
 			var route = main.response_route(incident, variant)
@@ -80,7 +89,9 @@ func _test_guard_route(main, mission):
 	mission.update_mission(0.016)
 	_expect(mission.state == 1, "entering the car should start the drive objective")
 
-	main.car.translation = mission.PARKING_POSITION + Vector3.UP * 0.65
+	var parked_transform = main.car.global_transform
+	parked_transform.origin = mission.PARKING_POSITION + Vector3.UP * 0.65
+	main.teleport_vehicle(main.car, parked_transform)
 	main.player.translation = main.car.translation + Vector3.UP
 	mission.update_mission(0.016)
 	_expect(mission.state == 2, "arriving in the occupied car should start access search")
@@ -133,6 +144,27 @@ func _test_vehicle_and_wanted_systems(main):
 	var previous_wanted = main.wanted_level
 	main.dispatch_police(Vector3.ZERO)
 	_expect(main.wanted_level == min(3, previous_wanted + 1), "a police dispatch should raise the wanted level")
+	var police_car = main.emergency_vehicles[-1].node
+	var police_collider = police_car.get_node_or_null("CollisionShape")
+	if police_collider is CollisionShape and police_collider.shape is BoxShape:
+		var collider_bottom = police_car.translation.y + police_collider.translation.y - police_collider.shape.extents.y
+		_expect(abs(collider_bottom - main.HLF_ROAD_SURFACE_Y) < 0.001, "police collider should rest on the new road physics surface")
+
+
+func _test_responder_movement(main):
+	var police_car = main.emergency_vehicles[-1].node
+	main.dispatch_fire_department(Vector3(-120, 0, 80))
+	var fire_engine = main.emergency_vehicles[-1].node
+	var police_start = police_car.translation
+	var fire_start = fire_engine.translation
+	for _frame in range(90):
+		yield(self, "physics_frame")
+	var police_travel = Vector2(police_car.translation.x - police_start.x, police_car.translation.z - police_start.z).length()
+	var fire_travel = Vector2(fire_engine.translation.x - fire_start.x, fire_engine.translation.z - fire_start.z).length()
+	_expect(police_travel > 1.0, "police cars should move across the raised road colliders")
+	_expect(fire_travel > 1.0, "the HLF should move across the raised road colliders")
+	_expect(abs(police_car.translation.y - main.GOLF_GROUND_HEIGHT) < 0.001, "moving police cars should retain their authored road height")
+	_expect(abs(fire_engine.translation.y - main.HLF_GROUND_HEIGHT) < 0.001, "the moving HLF should retain its authored road height")
 
 
 func _expect(condition: bool, message: String):
