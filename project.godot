@@ -14,6 +14,16 @@ _global_script_classes=[ {
 "language": "GDScript",
 "path": "res://scripts/map_expansion.gd"
 }, {
+"base": "Spatial",
+"class": "BerlinSegmentedMap",
+"language": "GDScript",
+"path": "res://scripts/berlin_segmented_map.gd"
+}, {
+"base": "Spatial",
+"class": "BerlinSurfaceGenerator",
+"language": "GDScript",
+"path": "res://scripts/berlin_surface_generator.gd"
+}, {
 "base": "Reference",
 "class": "PersuasionEvaluator",
 "language": "GDScript",
@@ -31,6 +41,8 @@ _global_script_classes=[ {
 } ]
 _global_script_class_icons={
 "BerlinMapExpansion": "",
+"BerlinSegmentedMap": "",
+"BerlinSurfaceGenerator": "",
 "PersuasionEvaluator": "",
 "RealisticHelicopterController": "",
 "RealisticVehicleController": ""

@@ -1,0 +1,2 @@
+- hat Inventar wie in Fallout
+- hat Character Stats wei in Fallout

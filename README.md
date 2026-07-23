@@ -1,10 +1,23 @@
 # GTA Berlin – Minimum Prototype
 
-Ein Godot-Prototyp gemäß `Concept.md`. Die editierbare Karte `scenes/BerlinMap.tscn`
-bildet Berliner Stadtblöcke mit texturierten Gründerzeitfassaden, Straßen, Innenhöfen,
-Stadtmobiliar und Landmarken ab. Die NPCs verwenden das riggte Modell `Assets/HumanV2.glb`.
-Eine prozedurale Außenzone erweitert die befahrbare Karte auf 1,4 × 1,4 Kilometer – mit
-Ringstraße, Ausfallstraßen, Gehwegen, Außenbezirken, Beleuchtung und Randbarrieren.
+Ein Godot-Prototyp gemäß `Concept.md`. Die Karte `scenes/BerlinSegmentedMap.tscn`
+lädt `Assets/Maps/Berlin_Segmentiert_EinzelneHaeuser.glb`: eine in 256 Kacheln
+segmentierte Berliner Satellitenkarte mit 5.340 eindeutigen, einzeln kollidierenden
+und zerstörbaren Gebäuden. Der Import zerlegt zusätzlich das letzte Sammelmesh in
+76 Häuser und entfernt 154 deckungsgleiche Exportduplikate. Vier zufällig, aber
+stabil verteilte Berliner Fassadenvarianten werden ohne vorhandene Modell-UVs über
+einen weltbasierten Projektionsshader aufgetragen.
+
+Die Karte umfasst rund 22 × 14,7 Kilometer und verwendet den `Street`-Ursprung der
+Quelldatei als präzisionssicheren Spielwelt-Anker. Die im GLB-Export ausgelassenen
+Kanten-Meshes `Street` und `Kanal` liegen als editierbarer Sidecar-Graph in
+`Assets/Maps/berlin_network.json`. Daraus erzeugt Godot beim Kartenstart gekachelte
+Asphaltflächen mit realistischer Textur, deutschen Mittellinien, Zebrastreifen,
+Gehwegen, Granitbordsteinen, Fahrzeugkollision, AStar-Routen sowie eine transparente
+Kanalfläche mit Wasser-Areas. Eine durchgehende Bodenkollision erlaubt dem Spieler
+das lückenlose Überqueren der Fahrbahnränder. Die NPCs verwenden das riggte Modell
+`Assets/HumanV2.glb`.
+
 Spieler- und Polizeiauto verwenden ein farbbasiertes Golf-7-Modell ohne Texturen. Das
 Spielerauto besitzt einen eigenen RigidBody-Controller mit vier einzeln berechneten
 Radaufstandspunkten, Federung, Dämpfung, Stabilisatoren, Ackermann-Lenkung,
@@ -79,6 +92,11 @@ ersetzt werden, ohne den Missionsablauf umzubauen.
 
 ```bash
 godot3 --no-window --audio-driver Dummy --path . --script tests/test_persuasion_evaluator.gd
+godot3 --no-window --audio-driver Dummy --path . --script tests/test_berlin_surface_generator.gd
+godot3 --no-window --audio-driver Dummy --path . --script tests/test_road_walkability.gd
+godot3 --no-window --audio-driver Dummy --path . --script tests/test_player_spawn_grounding.gd
+godot3 --no-window --audio-driver Dummy --path . --script tests/test_berlin_individual_buildings.gd
+godot3 --no-window --audio-driver Dummy --path . --script tests/test_imported_building_destruction.gd
 godot3 --no-window --audio-driver Dummy --path . --script tests/test_mission_one.gd
 godot3 --no-window --audio-driver Dummy --path . --script tests/test_combat_systems.gd
 godot3 --no-window --audio-driver Dummy --path . --script tests/test_vehicle_controller.gd
@@ -87,11 +105,20 @@ godot3 --no-window --audio-driver Dummy --path . --script tests/benchmark_vehicl
 ```
 
 Der erste Test prüft mehrere friedliche Überzeugungswege, Drohungen, Verneinungen und
-erneute Versuche. Der zweite prüft beide Missionsrouten, die Übergabe sowie Benzin,
-Fahrzeugschaden und Fahndungsanstieg. Der dritte prüft Waffenmodelle, Gewehrtreffer,
+erneute Versuche. Der Kartentest prüft alle 231 Straßenknoten, 285 Straßenkanten,
+57 Kanalknoten, 56 Kanalkanten, realistische Straßendetails, Chunk-Geometrie,
+Kollisionen, Wasser-Areas und AStar-Routing. Der Begehbarkeitstest lässt eine
+spielergleiche Kapsel längs über die Straße und quer über den Fahrbahnrand laufen.
+Der Spawn-Test beobachtet den echten Spieler in der vollständigen Hauptszene sechs
+Sekunden lang und verhindert Regressionen beim kilometerweiten Bodencollider. Die
+Gebäudetests prüfen Anzahl, Deduplizierung, alle vier Fassaden, Einzelcollider sowie
+den kompletten Einsturz eines importierten Hauses. Der Missionstest prüft beide
+Missionsrouten, die Übergabe sowie Benzin, Fahrzeugschaden und Fahndungsanstieg. Der
+Kampftest prüft Waffenmodelle, Gewehrtreffer,
 Magazine, Nachladen, Spielerschaden, Torso-Zielpunkt, Sound, Fahrzeugzerstörung und das
 HLF samt Bodenlage, Blaulicht, Audioausstattung und fünfminütigem Schlaucheinsatz. Der
-Missionstest kontrolliert zusätzlich Kartengröße und die freie Reichstag-Baufläche. Der
+Missionstest kontrolliert zusätzlich die segmentierte Kartengröße, Straßen- und
+Kanalgenerierung sowie die freie Reichstag-Baufläche. Der
 Fahrzeugtest prüft Federkräfte, Reibungskreis, vier belastete Räder, Geradeausfahrt,
 Bremsen und Lenkung. Der Hubschraubertest prüft Schub, Luftwiderstand, Bodeneffekt,
 Rotorhochlauf, Flugsteuerung sowie die Zustandsfolge Rotorbruch, Fall und Aufschlag.

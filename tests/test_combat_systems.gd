@@ -1,6 +1,7 @@
 extends SceneTree
 
 const MAIN_SCENE = preload("res://main.tscn")
+const AIR_TEST_Y := 180.0
 
 var failures = []
 
@@ -32,9 +33,9 @@ func _run():
 	# Isolate hitscan checks from the city geometry while still exercising the
 	# real physics ray, ammo consumption, falloff, and damage path.
 	main.in_car = false
-	main.player.global_transform = Transform(Basis(), Vector3(0, 50, 0))
+	main.player.global_transform = Transform(Basis(), Vector3(0, AIR_TEST_Y, 0))
 	main.player.get_node("CollisionShape").disabled = false
-	var target = _make_training_target(main, Vector3(0, 50.65, -12))
+	var target = _make_training_target(main, Vector3(0, AIR_TEST_Y + 0.65, -12))
 	yield(self, "physics_frame")
 	yield(self, "physics_frame")
 
@@ -63,18 +64,18 @@ func _run():
 
 	# The rifle target is behind the officer and cannot obstruct this shot, but
 	# move the actors above the map again to keep the line of sight deterministic.
-	main.player.global_transform = Transform(Basis(), Vector3(0, 50, 0))
+	main.player.global_transform = Transform(Basis(), Vector3(0, AIR_TEST_Y, 0))
 	var officer_count_before = main.police_officers.size()
-	main.spawn_police_officers(Vector3(0, 50, -6))
+	main.spawn_police_officers(Vector3(0, AIR_TEST_Y, -6))
 	_expect(
 		main.police_officers.size() == officer_count_before + 2,
 		"spawning a patrol should create two police officers"
 	)
 	if main.police_officers.size() > officer_count_before:
 		var officer = main.police_officers[officer_count_before]
-		officer.global_transform = Transform(Basis(), Vector3(0, 50, -6))
+		officer.global_transform = Transform(Basis(), Vector3(0, AIR_TEST_Y, -6))
 		if main.police_officers.size() > officer_count_before + 1:
-			main.police_officers[officer_count_before + 1].translation = Vector3(20, 50, -6)
+			main.police_officers[officer_count_before + 1].translation = Vector3(20, AIR_TEST_Y, -6)
 		yield(self, "physics_frame")
 		yield(self, "physics_frame")
 		_test_police_officer_and_shot(main, officer)
@@ -401,9 +402,9 @@ func _test_vehicle_entry_priority(main):
 	var player_transform = main.player.global_transform
 	var car_transform = main.car.global_transform
 	var helicopter_transform = main.helicopter.global_transform
-	main.player.global_transform = Transform(Basis(), Vector3(0, 50, 0))
-	main.car.global_transform = Transform(Basis(), Vector3(0.9, 50, 0))
-	main.helicopter.global_transform = Transform(Basis(), Vector3(0.2, 50, 0))
+	main.player.global_transform = Transform(Basis(), Vector3(0, AIR_TEST_Y, 0))
+	main.car.global_transform = Transform(Basis(), Vector3(0.9, AIR_TEST_Y, 0))
+	main.helicopter.global_transform = Transform(Basis(), Vector3(0.2, AIR_TEST_Y, 0))
 
 	main.helicopter.set_meta("destroyed", true)
 	main.toggle_nearest_vehicle()
@@ -411,7 +412,7 @@ func _test_vehicle_entry_priority(main):
 	_expect(main.camera.get_parent() == main.player, "car entry should keep the first-person camera on the player")
 	main.toggle_car()
 
-	main.player.global_transform = Transform(Basis(), Vector3(0, 50, 0))
+	main.player.global_transform = Transform(Basis(), Vector3(0, AIR_TEST_Y, 0))
 	main.helicopter.set_meta("destroyed", false)
 	main.car.set_meta("destroyed", true)
 	main.toggle_nearest_vehicle()

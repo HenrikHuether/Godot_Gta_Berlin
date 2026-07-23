@@ -200,6 +200,17 @@ func prepare_bundestag_site():
 		) + SITE_CLEARANCE
 	)
 
+	# Segmented source maps expose a semantic clear operation.  Never traverse
+	# their wrapper hierarchy as if an unknown top-level node were one building:
+	# doing so could detach an entire imported district (or the whole GLB root).
+	if berlin_map.has_method("clear_region"):
+		var clear_bounds = AABB(
+			Vector3(site_min.x, -1.0, site_min.y),
+			Vector3(site_max.x - site_min.x, 180.0, site_max.y - site_min.y)
+		)
+		berlin_map.clear_region(clear_bounds, "building")
+		return
+
 	# Collect before detaching anything: mutating a block while traversing its
 	# children used to leave neighbouring or nested facade nodes behind.
 	var structure_roots = []

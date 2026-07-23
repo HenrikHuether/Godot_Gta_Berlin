@@ -1,0 +1,4 @@
+- Wenn ein Gebäude brennt, breitet es sich nach 2 min auf das Nebengebäude aus. Usw.
+- Feuerwehr muss ggf. Nachbargebäude kühlen um ausbreitung zu verhindenr
+- Ein Gebäude stürtzt erst ein wenn mindestens 3 von 4 Ecken schwer beschädigt sind
+--> Bei eingestürtzen häusern spawnen mit delay 2 min Suchhunde

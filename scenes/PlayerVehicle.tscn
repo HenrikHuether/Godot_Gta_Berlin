@@ -11,6 +11,8 @@ bounce = 0.04
 
 [node name="PlayerVehicle" type="RigidBody"]
 mass = 1320.0
+collision_layer = 1
+collision_mask = 3
 physics_material_override = SubResource( 2 )
 gravity_scale = 1.0
 linear_damp = 0.02

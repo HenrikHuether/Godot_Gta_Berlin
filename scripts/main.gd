@@ -1,6 +1,6 @@
 extends Spatial
 
-const BERLIN_MAP_SCENE = preload("res://scenes/BerlinMap.tscn")
+const BERLIN_MAP_SCENE = preload("res://scenes/BerlinSegmentedMap.tscn")
 const HUMAN_SCENE = preload("res://Assets/HumanV2.glb")
 const GOLF_SCENE = preload("res://Assets/Golf7ModelV3.glb")
 const HLF_SCENE = preload("res://Assets/Vehicles/Feuerwehr_HLF.glb")
@@ -8,7 +8,6 @@ const EC135_SCENE = preload("res://Assets/Helicopters/EC135.glb")
 const PLAYER_VEHICLE_SCENE = preload("res://scenes/PlayerVehicle.tscn")
 const PLAYER_HELICOPTER_SCENE = preload("res://scenes/PlayerHelicopter.tscn")
 const MISSION_ONE_SCRIPT = preload("res://scripts/mission_one.gd")
-const MAP_EXPANSION_SCRIPT = preload("res://scripts/map_expansion.gd")
 const GOLF_VISUAL_SCALE = 0.65
 const GOLF_VISUAL_OFFSET = Vector3(0.0, -0.52, 0.0)
 const GOLF_COLLIDER_EXTENTS = Vector3(1.06, 0.72, 2.14)
@@ -88,7 +87,10 @@ var police_officers = []
 var destroyed_buildings = []
 var police_dispatch_count = 0
 var mission_one
+# Kept as a null compatibility field while older tests and callers migrate away
+# from the removed procedural expansion.
 var map_expansion
+var berlin_map
 var car_fuel = 38.0
 var car_health = 100
 var car_damage_cooldown = 0.0
@@ -124,8 +126,6 @@ var firefighting_operations = []
 func _ready():
 	Input.set_mouse_mode(Input.MOUSE_MODE_CAPTURED)
 	build_world()
-	map_expansion = MAP_EXPANSION_SCRIPT.new()
-	map_expansion.setup(self)
 	configure_driving_surfaces()
 	build_player()
 	build_audio()
@@ -133,8 +133,7 @@ func _ready():
 	build_helicopter()
 	build_npcs()
 	build_ui()
-	tag_destructible_buildings(get_node("BerlinMap"))
-	tag_destructible_buildings(map_expansion)
+	tag_destructible_buildings(berlin_map)
 	mission_one = MISSION_ONE_SCRIPT.new()
 	mission_one.name = "MissionOne"
 	add_child(mission_one)
@@ -349,16 +348,66 @@ func build_world():
 	sun.rotation_degrees = Vector3(-55, -25, 0)
 	sun.shadow_enabled = true
 	add_child(sun)
-	var berlin_map = get_node_or_null("BerlinMap")
+	berlin_map = get_node_or_null("BerlinMap")
 	if not berlin_map:
 		berlin_map = BERLIN_MAP_SCENE.instance()
 		berlin_map.name = "BerlinMap"
 		add_child(berlin_map)
+	if berlin_map.has_method("setup"):
+		berlin_map.setup(self)
+
+func get_berlin_map():
+	if is_instance_valid(berlin_map):
+		return berlin_map
+	berlin_map = get_node_or_null("BerlinMap")
+	return berlin_map
+
+func get_map_spawn_transform(spawn_id: String, fallback: Transform) -> Transform:
+	var map = get_berlin_map()
+	if not is_instance_valid(map) or not map.has_method("get_spawn_transform"):
+		return fallback
+	var spawn_value = map.get_spawn_transform(spawn_id)
+	if typeof(spawn_value) == TYPE_TRANSFORM:
+		return spawn_value
+	if typeof(spawn_value) == TYPE_VECTOR3:
+		var position_transform = fallback
+		position_transform.origin = spawn_value
+		return position_transform
+	if typeof(spawn_value) == TYPE_DICTIONARY:
+		if spawn_value.has("transform") and typeof(spawn_value["transform"]) == TYPE_TRANSFORM:
+			return spawn_value["transform"]
+		var dictionary_transform = fallback
+		if spawn_value.has("position") and typeof(spawn_value["position"]) == TYPE_VECTOR3:
+			dictionary_transform.origin = spawn_value["position"]
+		if spawn_value.has("basis") and typeof(spawn_value["basis"]) == TYPE_BASIS:
+			dictionary_transform.basis = spawn_value["basis"]
+		return dictionary_transform
+	return fallback
+
+func map_surface_ray(origin: Vector3, excluded := []):
+	var top_y = max(origin.y + 50.0, 150.0)
+	var bottom_y = min(origin.y - 60.0, -60.0)
+	var map = get_berlin_map()
+	if is_instance_valid(map) and map.has_method("get_map_bounds"):
+		var bounds = map.get_map_bounds()
+		if typeof(bounds) == TYPE_AABB:
+			top_y = max(top_y, bounds.position.y + bounds.size.y + 30.0)
+			bottom_y = min(bottom_y, bounds.position.y - 30.0)
+	return get_world().direct_space_state.intersect_ray(
+		Vector3(origin.x, top_y, origin.z),
+		Vector3(origin.x, bottom_y, origin.z),
+		excluded
+	)
 
 func build_player():
 	player = KinematicBody.new()
 	player.name = "Player"
-	player.translation = Vector3(3, 8, 8)
+	player.collision_layer = 1
+	player.collision_mask = 1
+	player.transform = get_map_spawn_transform(
+		"player",
+		Transform(Basis(), Vector3(3, 8, 8))
+	)
 	player_collider = CollisionShape.new()
 	player_collider.name = "CollisionShape"
 	var capsule = CapsuleShape.new()
@@ -460,7 +509,10 @@ func tag_destructible_buildings(node: Node):
 func build_car():
 	car = PLAYER_VEHICLE_SCENE.instance()
 	car.name = "Car"
-	car.translation = Vector3(2.8, 8, -4)
+	car.transform = get_map_spawn_transform(
+		"car",
+		Transform(Basis(), Vector3(2.8, 8, -4))
+	)
 	register_damageable_vehicle(car, 100, "player_car")
 	car_body = add_golf_visual(car)
 	add_child(car)
@@ -472,7 +524,10 @@ func build_car():
 func build_helicopter():
 	helicopter = PLAYER_HELICOPTER_SCENE.instance()
 	helicopter.name = "EC135"
-	helicopter.translation = EC135_SPAWN_POSITION
+	helicopter.transform = get_map_spawn_transform(
+		"helicopter",
+		Transform(Basis(), EC135_SPAWN_POSITION)
+	)
 	helicopter_cockpit_anchor = Spatial.new()
 	helicopter_cockpit_anchor.name = "CockpitAnchor"
 	helicopter_cockpit_anchor.translation = EC135_COCKPIT_POSITION
@@ -756,11 +811,7 @@ func place_car_on_ground():
 	var excluded = [car]
 	if player:
 		excluded.append(player)
-	var hit = get_world().direct_space_state.intersect_ray(
-		Vector3(origin.x, 50.0, origin.z),
-		Vector3(origin.x, -10.0, origin.z),
-		excluded
-	)
+	var hit = map_surface_ray(origin, excluded)
 	if hit:
 		var target_transform = car.global_transform
 		target_transform.origin.y = hit.position.y + GOLF_GROUND_HEIGHT
@@ -775,11 +826,7 @@ func place_helicopter_on_ground():
 		excluded.append(player)
 	if is_instance_valid(car):
 		excluded.append(car)
-	var hit = get_world().direct_space_state.intersect_ray(
-		Vector3(origin.x, 50.0, origin.z),
-		Vector3(origin.x, -10.0, origin.z),
-		excluded
-	)
+	var hit = map_surface_ray(origin, excluded)
 	if hit:
 		var target_transform = helicopter.global_transform
 		target_transform.origin.y = hit.position.y + EC135_GROUND_HEIGHT
@@ -797,48 +844,13 @@ func teleport_vehicle(vehicle, target_transform: Transform, reset_motion := true
 			vehicle.angular_velocity = Vector3.ZERO
 
 func configure_driving_surfaces():
-	var berlin_map = get_node_or_null("BerlinMap")
-	if not berlin_map:
+	var map = get_berlin_map()
+	if not is_instance_valid(map):
 		return
-	var ground = berlin_map.get_node_or_null("Ground")
-	if ground:
-		ground.set_meta("surface_grip", 0.52)
-		ground.set_meta("rolling_resistance", 2.4)
-		_tile_large_static_box(ground)
-	for road in berlin_map.get_children():
-		if not (road.name.begins_with("Road_X_") or road.name.begins_with("Road_Z_")):
-			continue
-		if road.has_node("SurfaceCollider"):
-			continue
-		var mesh_instance = road.get_node_or_null("Mesh")
-		if not (mesh_instance is MeshInstance) or not (mesh_instance.mesh is CubeMesh):
-			continue
-		var surface_body = StaticBody.new()
-		surface_body.name = "SurfaceCollider"
-		surface_body.set_meta("surface_grip", 1.02)
-		surface_body.set_meta("rolling_resistance", 1.0)
-		road.add_child(surface_body)
-		var surface_collider = CollisionShape.new()
-		surface_collider.name = "CollisionShape"
-		var road_size = mesh_instance.mesh.size
-		var segment_count = max(1, int(ceil(max(road_size.x, road_size.z) / 180.0)))
-		var segment_size = road_size
-		if road_size.x >= road_size.z:
-			segment_size.x /= segment_count
-		else:
-			segment_size.z /= segment_count
-		for segment_index in range(segment_count):
-			var segment_collider = surface_collider if segment_index == 0 else CollisionShape.new()
-			segment_collider.name = "CollisionShape" if segment_index == 0 else "CollisionShape_%02d" % segment_index
-			var long_offset = -max(road_size.x, road_size.z) * 0.5 + max(segment_size.x, segment_size.z) * (float(segment_index) + 0.5)
-			segment_collider.translation = Vector3(long_offset, 0, 0) if road_size.x >= road_size.z else Vector3(0, 0, long_offset)
-			var road_shape = BoxShape.new()
-			road_shape.extents = segment_size * 0.5
-			segment_collider.shape = road_shape
-			surface_body.add_child(segment_collider)
-	_tag_static_surfaces(berlin_map)
-	if map_expansion:
-		_tag_static_surfaces(map_expansion)
+	# The segmented-map wrapper owns all visual and collision generation. Main
+	# only supplies fallback vehicle coefficients where a semantic collider did
+	# not already provide authored values.
+	_tag_static_surfaces(map)
 
 func _tile_large_static_box(body: StaticBody, max_tile_size := 180.0):
 	var source_collider = body.get_node_or_null("CollisionShape")
@@ -866,23 +878,46 @@ func _tile_large_static_box(body: StaticBody, max_tile_size := 180.0):
 			body.add_child(tile_collider)
 
 func _tag_static_surfaces(node: Node):
-	if node is StaticBody and not node.has_meta("surface_grip"):
-		var lower_name = node.name.to_lower()
-		if lower_name.find("sidewalk") >= 0 or lower_name.find("walk") >= 0:
-			node.set_meta("surface_grip", 0.78)
-			node.set_meta("rolling_resistance", 1.35)
-		elif lower_name.find("ground") >= 0:
-			node.set_meta("surface_grip", 0.52)
-			node.set_meta("rolling_resistance", 2.4)
+	if node is StaticBody:
+		var surface_kind = _surface_kind(node)
+		if surface_kind.find("road") >= 0 or surface_kind.find("street") >= 0 or surface_kind.find("asphalt") >= 0:
+			if not node.has_meta("surface_grip"):
+				node.set_meta("surface_grip", 1.02)
+			if not node.has_meta("rolling_resistance"):
+				node.set_meta("rolling_resistance", 1.0)
+		elif surface_kind.find("sidewalk") >= 0 or surface_kind.find("walk") >= 0 or surface_kind.find("pavement") >= 0:
+			if not node.has_meta("surface_grip"):
+				node.set_meta("surface_grip", 0.78)
+			if not node.has_meta("rolling_resistance"):
+				node.set_meta("rolling_resistance", 1.35)
+		elif surface_kind.find("ground") >= 0 or surface_kind.find("terrain") >= 0 or surface_kind.find("grass") >= 0:
+			if not node.has_meta("surface_grip"):
+				node.set_meta("surface_grip", 0.52)
+			if not node.has_meta("rolling_resistance"):
+				node.set_meta("rolling_resistance", 2.4)
+		elif node.has_meta("surface_grip") and not node.has_meta("rolling_resistance"):
+			node.set_meta("rolling_resistance", 1.0)
 	for child in node.get_children():
 		_tag_static_surfaces(child)
+
+func _surface_kind(node: Node) -> String:
+	for meta_key in ["surface_kind", "surface_type", "map_feature", "feature_kind"]:
+		if node.has_meta(meta_key):
+			return str(node.get_meta(meta_key)).to_lower()
+	for group_name in ["map_road", "map_sidewalk", "map_ground", "map_canal", "map_building"]:
+		if node.is_in_group(group_name):
+			return group_name.to_lower()
+	return str(node.name).to_lower()
 
 func build_npcs():
 	var positions = [Vector3(-5, 8, -8), Vector3(8, 8, 5), Vector3(-8, 8, 12)]
 	for i in range(positions.size()):
 		var npc = StaticBody.new()
 		npc.name = "NPC_%d" % (i + 1)
-		npc.translation = positions[i]
+		npc.transform = get_map_spawn_transform(
+			"npc_%d" % (i + 1),
+			Transform(Basis(), positions[i])
+		)
 		npc.set_meta("health", 100)
 		npc.set_meta("role", "civilian")
 		var human = HUMAN_SCENE.instance()
@@ -905,9 +940,11 @@ func place_npcs_on_map():
 		excluded.append(npc)
 	for npc in npcs:
 		var origin = npc.global_transform.origin
-		var hit = get_world().direct_space_state.intersect_ray(Vector3(origin.x, 50, origin.z), Vector3(origin.x, -10, origin.z), excluded)
+		var hit = map_surface_ray(origin, excluded)
 		if hit:
-			npc.translation.y = hit.position.y
+			var grounded_transform = npc.global_transform
+			grounded_transform.origin.y = hit.position.y
+			npc.global_transform = grounded_transform
 
 func build_ui():
 	var layer = CanvasLayer.new()
@@ -1699,12 +1736,14 @@ func collapse_building(building):
 	if building in destroyed_buildings:
 		return
 	destroyed_buildings.append(building)
-	var building_position = building.global_transform.origin
-	var collision_shape = building.get_node_or_null("CollisionShape")
-	var extents = Vector3(8, 10, 8)
-	if collision_shape and collision_shape.shape is BoxShape:
-		extents = collision_shape.shape.extents
-	var ground_y = building_position.y - extents.y
+	var world_bounds = get_destructible_building_bounds(building)
+	var building_position = world_bounds.position + world_bounds.size * 0.5
+	var extents = Vector3(
+		max(0.75, world_bounds.size.x * 0.5),
+		max(0.50, world_bounds.size.y * 0.5),
+		max(0.75, world_bounds.size.z * 0.5)
+	)
+	var ground_y = world_bounds.position.y
 	var rubble = Spatial.new()
 	rubble.name = "Rubble_%s" % building.name
 	rubble.translation = Vector3(building_position.x, ground_y, building_position.z)
@@ -1724,6 +1763,48 @@ func collapse_building(building):
 	prompt.text = "Gebäude zerstört – Feuerwehr alarmiert"
 	dispatch_fire_department(Vector3(building_position.x, ground_y, building_position.z))
 	dispatch_police(Vector3(building_position.x, ground_y, building_position.z), 2)
+
+
+func get_destructible_building_bounds(building) -> AABB:
+	if building is MeshInstance:
+		var local_bounds = building.get_aabb()
+		if building.has_meta("destruction_local_aabb"):
+			var authored_bounds = building.get_meta("destruction_local_aabb")
+			if typeof(authored_bounds) == TYPE_AABB:
+				local_bounds = authored_bounds
+		return transform_aabb_to_world(local_bounds, building.global_transform)
+
+	var collision_shape = building.get_node_or_null("CollisionShape")
+	if collision_shape and collision_shape.shape is BoxShape:
+		var extents = collision_shape.shape.extents
+		var local_bounds = AABB(-extents, extents * 2.0)
+		return transform_aabb_to_world(local_bounds, collision_shape.global_transform)
+
+	var fallback_position = building.global_transform.origin
+	return AABB(fallback_position - Vector3(8, 10, 8), Vector3(16, 20, 16))
+
+
+func transform_aabb_to_world(box: AABB, transform: Transform) -> AABB:
+	var first = transform.xform(box.position)
+	var minimum = first
+	var maximum = first
+	for x_side in range(2):
+		for y_side in range(2):
+			for z_side in range(2):
+				var corner = box.position + Vector3(
+					box.size.x * float(x_side),
+					box.size.y * float(y_side),
+					box.size.z * float(z_side)
+				)
+				var world_corner = transform.xform(corner)
+				minimum.x = min(minimum.x, world_corner.x)
+				minimum.y = min(minimum.y, world_corner.y)
+				minimum.z = min(minimum.z, world_corner.z)
+				maximum.x = max(maximum.x, world_corner.x)
+				maximum.y = max(maximum.y, world_corner.y)
+				maximum.z = max(maximum.z, world_corner.z)
+	return AABB(minimum, maximum - minimum)
+
 
 func nearest_road(value: float) -> float:
 	var result = -180.0
@@ -1752,6 +1833,46 @@ func clamp_response_point(point: Vector3) -> Vector3:
 	return point
 
 func response_route(incident: Vector3, variant: int) -> Array:
+	var map = get_berlin_map()
+	if is_instance_valid(map) and map.has_method("get_response_route"):
+		var mapped_route = _normalize_response_route(
+			map.get_response_route(incident, variant),
+			incident
+		)
+		if mapped_route.size() >= 2:
+			return mapped_route
+	return _legacy_response_route(incident, variant)
+
+func _normalize_response_route(route_value, incident: Vector3) -> Array:
+	var route := []
+	if typeof(route_value) == TYPE_DICTIONARY:
+		if route_value.has("spawn"):
+			_append_route_point(route, route_value["spawn"])
+		for points_key in ["waypoints", "route", "path", "points"]:
+			if route_value.has(points_key):
+				_append_route_points(route, route_value[points_key])
+		if route_value.has("target"):
+			_append_route_point(route, route_value["target"])
+	elif typeof(route_value) == TYPE_ARRAY or typeof(route_value) == typeof(PoolVector3Array()):
+		_append_route_points(route, route_value)
+	if route.size() == 1:
+		_append_route_point(route, incident)
+	return route
+
+func _append_route_points(route: Array, points):
+	if not (typeof(points) == TYPE_ARRAY or typeof(points) == typeof(PoolVector3Array())):
+		return
+	for point in points:
+		_append_route_point(route, point)
+
+func _append_route_point(route: Array, point):
+	if typeof(point) != TYPE_VECTOR3:
+		return
+	if not route.empty() and route[-1].distance_squared_to(point) < 0.0001:
+		return
+	route.append(point)
+
+func _legacy_response_route(incident: Vector3, variant: int) -> Array:
 	var direction_sign = 1.0 if variant % 2 == 0 else -1.0
 	# Outside the legacy 520 m core, route responders along the generated
 	# outbound axes or the +/-320 m orbital road instead of across open terrain.
@@ -1785,6 +1906,38 @@ func response_route(incident: Vector3, variant: int) -> Array:
 		spawn = target + Vector3(65.0 * direction_sign, 0, 0)
 	return [spawn, target]
 
+func _offset_route_laterally(route: Array, lateral_offset: float) -> Array:
+	if abs(lateral_offset) < 0.001 or route.size() < 2:
+		return route.duplicate()
+	var offset_route := []
+	for point_index in range(route.size()):
+		var previous_point = route[max(0, point_index - 1)]
+		var next_point = route[min(route.size() - 1, point_index + 1)]
+		var tangent = next_point - previous_point
+		tangent.y = 0.0
+		if tangent.length_squared() < 0.0001:
+			tangent = Vector3.FORWARD
+		else:
+			tangent = tangent.normalized()
+		var lane_right = Vector3(-tangent.z, 0.0, tangent.x)
+		offset_route.append(route[point_index] + lane_right * lateral_offset)
+	return offset_route
+
+func _route_at_vehicle_height(route: Array, kind: String) -> Array:
+	var elevated_route := []
+	var ground_height = HLF_GROUND_HEIGHT if kind == "fire" else GOLF_GROUND_HEIGHT
+	var height_above_road = ground_height - HLF_ROAD_SURFACE_Y
+	for route_point in route:
+		var elevated_point: Vector3 = route_point
+		if abs(elevated_point.y) < 0.001:
+			# Legacy route points describe the old map's y=0 datum.
+			elevated_point.y = ground_height
+		else:
+			# Segmented-map points lie on the actual road surface.
+			elevated_point.y += height_above_road
+		elevated_route.append(elevated_point)
+	return elevated_route
+
 func create_emergency_vehicle(kind: String, spawn_position: Vector3):
 	var vehicle = KinematicBody.new()
 	vehicle.name = "FireEngine" if kind == "fire" else "PoliceCar"
@@ -1809,14 +1962,24 @@ func create_emergency_vehicle(kind: String, spawn_position: Vector3):
 	return vehicle
 
 func dispatch_fire_department(incident: Vector3):
-	var route = response_route(incident, destroyed_buildings.size())
+	var route = _route_at_vehicle_height(
+		response_route(incident, destroyed_buildings.size()),
+		"fire"
+	)
 	var fire_spawn = route[0]
-	var fire_target = route[1]
-	fire_spawn.y = HLF_GROUND_HEIGHT
-	fire_target.y = HLF_GROUND_HEIGHT
+	var fire_target = route[-1]
+	var first_waypoint = route[1]
 	var engine = create_emergency_vehicle("fire", fire_spawn)
-	engine.look_at(Vector3(fire_target.x, fire_spawn.y, fire_target.z), Vector3.UP)
-	emergency_vehicles.append({"node": engine, "kind": "fire", "target": fire_target, "incident": incident, "arrived": false})
+	engine.look_at(Vector3(first_waypoint.x, fire_spawn.y, first_waypoint.z), Vector3.UP)
+	emergency_vehicles.append({
+		"node": engine,
+		"kind": "fire",
+		"target": fire_target,
+		"waypoints": route,
+		"waypoint_index": 1,
+		"incident": incident,
+		"arrived": false
+	})
 	alert_label.text = "FEUERWEHR AUF ANFAHRT"
 
 func dispatch_police(incident: Vector3, severity := 1):
@@ -1825,25 +1988,41 @@ func dispatch_police(incident: Vector3, severity := 1):
 	police_dispatch_count += 1
 	for unit in range(2):
 		var route = response_route(incident, police_dispatch_count + unit)
-		var police_spawn = route[0]
-		var police_target = route[1]
 		# Fire and police are dispatched together after a building collapse. Keep
-		# both patrol cars in their own lanes so they neither spawn inside the HLF
-		# nor converge on its exact stopping point at the incident.
-		var route_direction = police_target - police_spawn
-		route_direction.y = 0.0
-		if route_direction.length_squared() > 0.0001:
-			route_direction = route_direction.normalized()
-			var lane_right = Vector3(-route_direction.z, 0.0, route_direction.x)
-			var lane_offset = (-1.0 if unit == 0 else 1.0) * EMERGENCY_LANE_OFFSET
-			police_spawn = clamp_response_point(police_spawn + lane_right * lane_offset)
-			police_target = clamp_response_point(police_target + lane_right * lane_offset)
-		police_spawn.y = GOLF_GROUND_HEIGHT
-		police_target.y = GOLF_GROUND_HEIGHT
+		# both patrol cars in their own lanes along every graph segment. New-map
+		# points must not be clamped to the removed +/-680 metre legacy boundary.
+		var lane_offset = (-1.0 if unit == 0 else 1.0) * EMERGENCY_LANE_OFFSET
+		route = _route_at_vehicle_height(
+			_offset_route_laterally(route, lane_offset),
+			"police"
+		)
+		var police_spawn = route[0]
+		var police_target = route[-1]
+		var first_waypoint = route[1]
 		var police_car = create_emergency_vehicle("police", police_spawn)
-		police_car.look_at(Vector3(police_target.x, police_spawn.y, police_target.z), Vector3.UP)
-		emergency_vehicles.append({"node": police_car, "kind": "police", "target": police_target, "incident": incident, "arrived": false})
+		police_car.look_at(Vector3(first_waypoint.x, police_spawn.y, first_waypoint.z), Vector3.UP)
+		emergency_vehicles.append({
+			"node": police_car,
+			"kind": "police",
+			"target": police_target,
+			"waypoints": route,
+			"waypoint_index": 1,
+			"incident": incident,
+			"arrived": false
+		})
 	alert_label.text = "POLIZEI ALARMIERT"
+
+func _response_waypoints(response: Dictionary, vehicle: Spatial) -> Array:
+	var waypoints := []
+	if response.has("waypoints"):
+		_append_route_points(waypoints, response["waypoints"])
+	if waypoints.empty():
+		waypoints.append(vehicle.translation)
+		if response.has("target"):
+			_append_route_point(waypoints, response["target"])
+	if waypoints.size() == 1:
+		waypoints.append(waypoints[0])
+	return waypoints
 
 func update_emergency_vehicles(delta):
 	for response in emergency_vehicles:
@@ -1860,23 +2039,40 @@ func update_emergency_vehicles(delta):
 			update_hlf_emergency_effects(vehicle, not response.arrived)
 		if response.arrived:
 			continue
-		var target = response.target
+		var waypoints = _response_waypoints(response, vehicle)
+		response["waypoints"] = waypoints
+		var final_waypoint_index = waypoints.size() - 1
+		var waypoint_index = int(clamp(
+			int(response.get("waypoint_index", 1)),
+			1,
+			final_waypoint_index
+		))
+		var intermediate_distance = 4.0
+		while waypoint_index < final_waypoint_index:
+			var waypoint_offset: Vector3 = waypoints[waypoint_index] - vehicle.translation
+			waypoint_offset.y = 0.0
+			if waypoint_offset.length() > intermediate_distance:
+				break
+			waypoint_index += 1
+		response["waypoint_index"] = waypoint_index
+		var target: Vector3 = waypoints[waypoint_index]
 		var offset = target - vehicle.translation
 		offset.y = 0
 		var arrival_distance = FIRE_ENGINE_ARRIVAL_DISTANCE if response.kind == "fire" else 2.5
-		if offset.length() > arrival_distance:
+		var at_final_waypoint = waypoint_index == final_waypoint_index
+		if not at_final_waypoint or offset.length() > arrival_distance:
 			var speed = FIRE_ENGINE_SPEED if response.kind == "fire" else POLICE_SPEED
 			if vehicle is KinematicBody:
 				vehicle.move_and_slide(offset.normalized() * speed, Vector3.UP)
 			else:
 				vehicle.translation += offset.normalized() * speed * delta
-			# Horizontal KinematicBody collision recovery can otherwise lift a vehicle
-			# onto another responder and leave it permanently floating above the road.
-			vehicle.translation.y = HLF_GROUND_HEIGHT if response.kind == "fire" else GOLF_GROUND_HEIGHT
+			# The waypoint carries the real road height. This keeps responders on
+			# segmented-map streets instead of forcing the old flat-map constant.
+			vehicle.translation.y = target.y
 			vehicle.look_at(Vector3(target.x, vehicle.translation.y, target.z), Vector3.UP)
 		else:
 			response.arrived = true
-			vehicle.translation.y = HLF_GROUND_HEIGHT if response.kind == "fire" else GOLF_GROUND_HEIGHT
+			vehicle.translation.y = target.y
 			if response.kind == "police":
 				spawn_police_officers(vehicle.global_transform.origin)
 				alert_label.text = "POLIZEI: STEHEN BLEIBEN!"
@@ -1913,7 +2109,8 @@ func spawn_police_officers(vehicle_position: Vector3):
 	for side in [-1, 1]:
 		var officer = KinematicBody.new()
 		officer.name = "PoliceOfficer"
-		officer.translation = Vector3(vehicle_position.x + side * 2.0, 0.05, vehicle_position.z)
+		var road_surface_y = vehicle_position.y - GOLF_GROUND_HEIGHT + HLF_ROAD_SURFACE_Y
+		officer.translation = Vector3(vehicle_position.x + side * 2.0, road_surface_y, vehicle_position.z)
 		officer.set_meta("health", 120)
 		officer.set_meta("role", "police")
 		officer.set_meta("shoot_cooldown", 0.4 + float(side + 1) * 0.25)
@@ -2148,7 +2345,10 @@ func commit_player_respawn():
 	in_car = false
 	in_helicopter = false
 	attach_camera_to_player()
-	player.global_transform = Transform(Basis(), Vector3(3, 4, 8))
+	player.global_transform = get_map_spawn_transform(
+		"respawn",
+		Transform(Basis(), Vector3(3, 4, 8))
+	)
 	player.rotation_degrees = Vector3.ZERO
 	camera.rotation_degrees = Vector3.ZERO
 	look_x = 0.0

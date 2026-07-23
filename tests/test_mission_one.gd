@@ -19,7 +19,7 @@ func _run():
 		main.helicopter.set_simulation_enabled(false)
 
 	_expect(main.mission_one != null, "main should create the Mission 1 controller")
-	_test_expanded_map_and_site_cleanup(main)
+	_test_segmented_map_and_site_cleanup(main)
 	_test_helicopter_shortcut_conflict(main)
 	_test_guard_route(main, main.mission_one)
 
@@ -40,7 +40,7 @@ func _run():
 	yield(_test_responder_movement(main), "completed")
 
 	if failures.empty():
-		print("PASS: Mission 1 state flow, expanded map, clear site, vehicle resources, damage, and wanted level")
+		print("PASS: Mission 1 state flow, segmented Berlin map, clear site, vehicle resources, damage, and wanted level")
 		quit(0)
 	else:
 		for failure in failures:
@@ -48,42 +48,73 @@ func _run():
 		quit(1)
 
 
-func _test_expanded_map_and_site_cleanup(main):
-	_expect(main.map_expansion != null, "main should create the runtime map expansion")
-	if main.map_expansion:
-		var bounds = main.map_expansion.get_map_bounds()
-		_expect(bounds.position.x == -700.0 and bounds.position.z == -700.0, "expanded map should begin at -700 m on both axes")
-		_expect(bounds.size.x == 1400.0 and bounds.size.z == 1400.0, "expanded map should cover 1.4 km on both axes")
-		_expect(main.map_expansion.has_node("ExpandedRoadNetwork"), "expanded map should contain its ring and outbound roads")
-		_expect(main.map_expansion.has_node("ExpandedDistricts"), "expanded map should contain outer districts")
-		var ring_road = main.map_expansion.get_node_or_null("ExpandedRoadNetwork/RingNorth")
-		_expect(ring_road is StaticBody and ring_road.has_meta("surface_grip"), "expanded asphalt should provide a tagged physics surface")
-		_expect(ring_road.get_node_or_null("CollisionShape") is CollisionShape, "long roads should preserve their primary collider path")
-		if ring_road:
-			for child in ring_road.get_children():
-				if child is CollisionShape and child.shape is BoxShape:
-					_expect(max(child.shape.extents.x, child.shape.extents.z) <= 90.1, "large map surfaces should use Bullet-safe collision tiles")
+func _test_segmented_map_and_site_cleanup(main):
+	_expect(main.map_expansion == null, "the obsolete procedural map expansion should remain disabled")
+	var berlin_map = main.get_node("BerlinMap")
+	_expect(berlin_map.has_method("get_map_bounds"), "segmented Berlin map should expose its playable bounds")
+	_expect(berlin_map.has_method("clear_region"), "segmented Berlin map should expose semantic building cleanup")
+	var bounds = berlin_map.get_map_bounds()
+	_expect(bounds.size.x > 22000.0, "satellite map should span more than 22 km east-west")
+	_expect(bounds.size.z > 14600.0, "satellite map should span more than 14.6 km north-south")
+	_expect(bounds.size.y >= 115.0, "map bounds should include the tallest imported building")
+
+	var source = berlin_map.get_node_or_null("Source")
+	var generator = berlin_map.get_node_or_null("Generator")
+	var ground_surface = berlin_map.get_node_or_null("GroundSurface")
+	_expect(is_instance_valid(source), "Berlin map should retain the imported GLB source root")
+	_expect(
+		is_instance_valid(source) and source.get_child_count() >= 280,
+		"segmented GLB should retain all terrain, building, and reference nodes after mission cleanup"
+	)
+	_expect(ground_surface is StaticBody, "segmented map should provide a stable terrain collider")
+	if ground_surface is StaticBody:
+		_expect(abs(float(ground_surface.get_meta("surface_grip")) - 0.52) < 0.001, "terrain should expose its authored driving grip")
+		var ground_collision = ground_surface.get_node_or_null("CollisionShape")
+		_expect(
+			ground_collision is CollisionShape and ground_collision.shape is BoxShape,
+			"walkable terrain should use one continuous solid shape rather than the KinematicBody-breaking PlaneShape"
+		)
+	_expect(main.player.collision_layer == 1 and main.player.collision_mask == 1, "player should ignore thin road-edge collision meshes")
+	_expect(bool(main.car.collision_mask & 2), "vehicle suspension should still query the dedicated asphalt layer")
+
+	_expect(is_instance_valid(generator) and generator.has_method("get_diagnostics"), "map should own its street and canal generator")
+	if is_instance_valid(generator) and generator.has_method("get_diagnostics"):
+		var diagnostics = generator.get_diagnostics()
+		_expect(bool(diagnostics.get("built", false)), "street and canal generation should finish during map startup")
+		_expect(int(diagnostics.get("street_vertex_count", 0)) == 231, "Street graph should retain all source vertices")
+		_expect(int(diagnostics.get("street_edge_count", 0)) == 285, "Street graph should retain all source edges")
+		_expect(int(diagnostics.get("canal_vertex_count", 0)) == 57, "Kanal graph should retain all source vertices")
+		_expect(int(diagnostics.get("canal_edge_count", 0)) == 56, "Kanal graph should retain all source edges")
+		_expect(int(diagnostics.get("road_chunk_count", 0)) > 0, "Street graph should generate colliding road chunks")
+		_expect(int(diagnostics.get("canal_chunk_count", 0)) > 0, "Kanal graph should generate visible water chunks")
+
+	var road_body = _find_first_type(generator.get_node_or_null("RoadChunks"), "StaticBody") if is_instance_valid(generator) else null
+	_expect(road_body is StaticBody, "generated asphalt should contain a StaticBody")
+	if road_body is StaticBody:
+		_expect(road_body.collision_layer == 2, "asphalt should use the dedicated non-player collision layer")
+		_expect(abs(float(road_body.get_meta("surface_grip")) - 1.02) < 0.001, "generated asphalt should expose road grip")
+		var road_collision = _find_first_type(road_body, "CollisionShape")
+		_expect(
+			road_collision is CollisionShape and road_collision.shape is ConcavePolygonShape,
+			"generated asphalt should use a triangle-mesh collision"
+		)
+	var canal_root = generator.get_node_or_null("CanalChunks") if is_instance_valid(generator) else null
+	_expect(_find_first_type(canal_root, "Area") is Area, "generated canal should contain water trigger Areas")
+	_expect(_find_first_type(canal_root, "StaticBody") == null, "canal water should not be a solid driving surface")
+
 	for incident in [Vector3(650, 0, 0), Vector3(650, 0, 650)]:
 		for variant in range(2):
 			var route = main.response_route(incident, variant)
+			_expect(route.size() >= 2, "road graph should return a responder route")
 			for route_point in route:
 				_expect(
-					abs(route_point.x) <= 680.0 and abs(route_point.z) <= 680.0,
-					"expanded-map responder routes should remain inside the boundary"
+					route_point.x >= bounds.position.x
+					and route_point.x <= bounds.position.x + bounds.size.x
+					and route_point.z >= bounds.position.z
+					and route_point.z <= bounds.position.z + bounds.size.z,
+					"responder graph waypoints should remain inside the imported map"
 				)
 
-	var berlin_map = main.get_node("BerlinMap")
-	_expect(berlin_map.has_node("Block_01/Sidewalk"), "Bundestag cleanup should retain the original sidewalk surface")
-	_expect(berlin_map.has_node("Block_01/Courtyard"), "Bundestag cleanup should retain the original courtyard surface")
-	for removed_path in [
-		"Block_02/Building_02_00",
-		"Block_02/Building_02_02",
-		"Block_02/Building_02_04",
-		"Block_06/Building_06_00"
-	]:
-		_expect(not berlin_map.has_node(removed_path), "%s should be removed because its facade overlaps the Bundestag" % removed_path)
-	_expect(berlin_map.has_node("Block_02/Building_02_01"), "non-overlapping neighbouring buildings should remain")
-	_expect(berlin_map.has_node("BrandenburgGate"), "Bundestag cleanup should preserve the Brandenburg Gate")
 	var mission_building = main.mission_one.get_node_or_null("BundestagMissionBuilding")
 	_expect(is_instance_valid(mission_building), "mission should build the Bundestag shell")
 	if is_instance_valid(mission_building):
@@ -216,6 +247,18 @@ func _test_responder_movement(main):
 	_expect(fire_travel > 1.0, "the HLF should move across the raised road colliders")
 	_expect(abs(police_car.translation.y - main.GOLF_GROUND_HEIGHT) < 0.001, "moving police cars should retain their authored road height")
 	_expect(abs(fire_engine.translation.y - main.HLF_GROUND_HEIGHT) < 0.001, "the moving HLF should retain its authored road height")
+
+
+func _find_first_type(root, class_name_value: String):
+	if root == null:
+		return null
+	if root.get_class() == class_name_value:
+		return root
+	for child in root.get_children():
+		var found = _find_first_type(child, class_name_value)
+		if found != null:
+			return found
+	return null
 
 
 func _expect(condition: bool, message: String):
