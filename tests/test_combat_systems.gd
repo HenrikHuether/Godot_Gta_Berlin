@@ -18,6 +18,8 @@ func _run():
 	main.set_physics_process(false)
 	main.set_process(false)
 	main.car.set_simulation_enabled(false)
+	if is_instance_valid(main.helicopter) and main.helicopter.has_method("set_simulation_enabled"):
+		main.helicopter.set_simulation_enabled(false)
 	_expect(is_instance_valid(main.player_collider), "main should retain a direct reference to the player collider")
 	_expect(
 		main.player.get_node_or_null("CollisionShape") == main.player_collider,
@@ -54,6 +56,7 @@ func _run():
 	_test_reload_transfer(main)
 	_test_player_damage(main)
 	_test_player_death_sequence(main)
+	_test_vehicle_entry_priority(main)
 	_test_damageable_vehicles(main)
 	_test_hlf_fire_engine(main)
 	_test_combined_emergency_dispatch(main)
@@ -113,7 +116,7 @@ func _test_weapon_models_and_selection(main):
 
 
 func _test_procedural_audio(main):
-	var expected_sounds = ["pistol", "rifle", "police_pistol", "rocket", "explosion", "fire", "fire_engine", "martinshorn"]
+	var expected_sounds = ["pistol", "rifle", "police_pistol", "rocket", "explosion", "fire", "fire_engine", "martinshorn", "helicopter"]
 	for sound_name in expected_sounds:
 		var exists = main.sound_streams.has(sound_name)
 		_expect(exists, "%s should have a procedural sound stream" % sound_name)
@@ -129,7 +132,7 @@ func _test_procedural_audio(main):
 		_expect(not stream.stereo, "%s sound should remain mono for 3D positioning" % sound_name)
 		_expect(stream.data.size() > 0, "%s sound should contain generated PCM frames" % sound_name)
 
-	for loop_name in ["fire", "fire_engine", "martinshorn"]:
+	for loop_name in ["fire", "fire_engine", "martinshorn", "helicopter"]:
 		if not main.sound_streams.has(loop_name) or not (main.sound_streams[loop_name] is AudioStreamSample):
 			continue
 		var loop_stream = main.sound_streams[loop_name]
@@ -303,6 +306,51 @@ func _test_damageable_vehicles(main):
 		main.car.set_meta("health", initial_player_car_health)
 		main.car_health = initial_player_car_health
 
+	_expect(is_instance_valid(main.helicopter), "main should create a player-flyable EC135")
+	if is_instance_valid(main.helicopter):
+		_expect(str(main.helicopter.get_meta("role")) == "vehicle", "EC135 should use the shared damageable-vehicle role")
+		_expect(str(main.helicopter.get_meta("vehicle_kind")) == "player_helicopter", "EC135 should expose its player-helicopter kind")
+		_expect(int(main.helicopter.get_meta("health")) == 180, "EC135 should begin with 180 HP")
+		_expect(main.helicopter.has_method("set_driver_input"), "EC135 should expose the flight-controller input API")
+		_expect(main.helicopter.has_method("is_rotor_failed") and not main.helicopter.is_rotor_failed(), "EC135 rotors should begin intact")
+		var helicopter_visual = main.helicopter.get_node_or_null("EC135Visual")
+		_expect(is_instance_valid(helicopter_visual), "EC135 should have a calibrated visual wrapper")
+		if is_instance_valid(helicopter_visual):
+			_expect(
+				abs(helicopter_visual.scale.x - main.EC135_VISUAL_SCALE) < 0.00001,
+				"EC135 visual should scale the supplied rotor disk to 10.40 metres"
+			)
+			var helicopter_model = helicopter_visual.get_node_or_null("EC135Model")
+			_expect(is_instance_valid(helicopter_model), "EC135 wrapper should contain the supplied GLB")
+			if is_instance_valid(helicopter_model):
+				_expect(helicopter_model.find_node("Object_9", true, false) is MeshInstance, "EC135 should retain its separate main-rotor mesh")
+				_expect(helicopter_model.find_node("Object_7", true, false) is MeshInstance, "EC135 should retain its separate tail-rotor mesh")
+				var glass_mesh = helicopter_model.find_node("Object_11", true, false)
+				_expect(glass_mesh is MeshInstance, "EC135 should retain its dedicated canopy glass mesh")
+				if glass_mesh is MeshInstance:
+					var glass_material = glass_mesh.get_surface_material(0)
+					_expect(glass_material is SpatialMaterial, "EC135 canopy should use a SpatialMaterial override")
+					if glass_material is SpatialMaterial:
+						_expect(glass_material.flags_transparent, "EC135 canopy should remain transparent")
+						_expect(glass_material.albedo_color.a <= main.EC135_GLASS_ALPHA + 0.001, "EC135 canopy alpha should leave the cockpit view clear")
+						_expect(glass_material.params_cull_mode == SpatialMaterial.CULL_DISABLED, "EC135 canopy should render from inside and outside")
+						_expect(glass_material.params_depth_draw_mode == SpatialMaterial.DEPTH_DRAW_DISABLED, "EC135 canopy must not occlude the world through an alpha depth prepass")
+						_expect(glass_material.metallic < 0.01, "EC135 canopy should not use the imported fully metallic shading")
+		_expect(main.helicopter.get_node_or_null("MainRotorArea") is Area, "EC135 should expose a swept main-rotor collision disk")
+		_expect(main.helicopter.get_node_or_null("TailRotorArea") is Area, "EC135 should expose a swept tail-rotor collision disk")
+		_expect(
+			main.helicopter_cockpit_anchor is Spatial
+				and main.helicopter_cockpit_anchor.get_parent() == main.helicopter
+				and main.helicopter_cockpit_anchor.translation.distance_to(main.EC135_COCKPIT_POSITION) < 0.001,
+			"EC135 should own a stable cockpit camera anchor"
+		)
+		var initial_helicopter_health = int(main.helicopter.get_meta("health"))
+		main.damage_vehicle(main.helicopter, 9, false)
+		_expect(int(main.helicopter.get_meta("health")) == initial_helicopter_health - 9, "shared vehicle damage should reduce EC135 HP")
+		_expect(main.helicopter_health == initial_helicopter_health - 9, "EC135 metadata and HUD health should stay synchronized")
+		main.helicopter.set_meta("health", initial_helicopter_health)
+		main.helicopter_health = initial_helicopter_health
+
 	# Keep the blast hundreds of metres from the player, while using the real
 	# patrol-car factory and destruction path.
 	var remote_position = main.player.global_transform.origin + Vector3(180, 0, 180)
@@ -333,6 +381,64 @@ func _test_damageable_vehicles(main):
 		_expect(is_instance_valid(fire_audio), "vehicle fire should create a 3D audio player")
 		if is_instance_valid(fire_audio):
 			_expect(fire_audio.stream == main.sound_streams["fire"], "vehicle fire should use the looping procedural fire stream")
+
+	if is_instance_valid(main.helicopter):
+		var helicopter_fires_before = main.vehicle_fires.size()
+		main.in_helicopter = true
+		main.player_collider.disabled = true
+		main.attach_camera_to_helicopter()
+		main._on_helicopter_hard_impact(25.0)
+		_expect(bool(main.helicopter.get_meta("destroyed")), "a catastrophic intact-rotor impact should destroy the EC135")
+		_expect(main.helicopter.is_rotor_failed(), "catastrophic EC135 destruction should also break its rotor system")
+		_expect(main.destroyed_vehicles.has(main.helicopter), "destroyed EC135 should enter the destroyed-vehicle registry")
+		_expect(main.vehicle_fires.size() == helicopter_fires_before + 1, "destroyed EC135 should create a persistent vehicle fire")
+		_expect(main.camera.get_parent() == main.player, "EC135 crash destruction should return the camera to the player before death")
+		if main.player_dying:
+			main.update_player_death(2.50)
+
+
+func _test_vehicle_entry_priority(main):
+	var player_transform = main.player.global_transform
+	var car_transform = main.car.global_transform
+	var helicopter_transform = main.helicopter.global_transform
+	main.player.global_transform = Transform(Basis(), Vector3(0, 50, 0))
+	main.car.global_transform = Transform(Basis(), Vector3(0.9, 50, 0))
+	main.helicopter.global_transform = Transform(Basis(), Vector3(0.2, 50, 0))
+
+	main.helicopter.set_meta("destroyed", true)
+	main.toggle_nearest_vehicle()
+	_expect(main.in_car and not main.in_helicopter, "a nearer helicopter wreck must not block entry into a usable car")
+	_expect(main.camera.get_parent() == main.player, "car entry should keep the first-person camera on the player")
+	main.toggle_car()
+
+	main.player.global_transform = Transform(Basis(), Vector3(0, 50, 0))
+	main.helicopter.set_meta("destroyed", false)
+	main.car.set_meta("destroyed", true)
+	main.toggle_nearest_vehicle()
+	_expect(main.in_helicopter and not main.in_car, "a nearer car wreck must not block entry into a usable EC135")
+	_expect(main.camera.get_parent() == main.helicopter_cockpit_anchor, "EC135 entry should attach the camera directly to its cockpit anchor")
+	_expect(main.camera.translation.distance_to(main.CAMERA_EYE_OFFSET) < 0.001, "cockpit camera should retain the authored eye offset")
+	var elevated_helicopter_transform = main.helicopter.global_transform
+	elevated_helicopter_transform.origin += Vector3.UP * 18.0
+	main.helicopter.global_transform = elevated_helicopter_transform
+	var expected_camera_position = main.helicopter_cockpit_anchor.global_transform.xform(main.CAMERA_EYE_OFFSET)
+	_expect(
+		main.camera.global_transform.origin.distance_to(expected_camera_position) < 0.001,
+		"cockpit camera must inherit a rapid helicopter climb immediately without player-follow lag"
+	)
+	main.toggle_helicopter()
+	_expect(main.camera.get_parent() == main.player, "normal EC135 exit should return the camera to the player")
+	main.toggle_helicopter()
+	_expect(main.camera.get_parent() == main.helicopter_cockpit_anchor, "second EC135 entry should reattach the cockpit camera")
+	main.start_player_death()
+	_expect(main.camera.get_parent() == main.player, "player death in flight should immediately detach the camera from the EC135")
+	main.update_player_death(2.50)
+	_expect(not main.player_dying and main.camera.get_parent() == main.player, "respawn should retain player camera ownership")
+
+	main.car.set_meta("destroyed", false)
+	main.player.global_transform = player_transform
+	main.car.global_transform = car_transform
+	main.helicopter.global_transform = helicopter_transform
 
 
 func _test_golf_vehicle_visual(vehicle, police_variant: bool):
@@ -627,6 +733,18 @@ func _test_police_officer_and_shot(main, officer):
 	)
 	if muzzle_flash:
 		_expect(muzzle_flash.visible, "police_shoot should flash the service-pistol muzzle")
+
+	var helicopter_transform = main.helicopter.global_transform
+	main.helicopter.global_transform = Transform(Basis(), officer.global_transform.origin + Vector3.UP * 80.0)
+	main.in_helicopter = true
+	var high_target_shots_before = int(officer.get_meta("shots_fired"))
+	main.police_shoot(officer)
+	_expect(
+		int(officer.get_meta("shots_fired")) == high_target_shots_before,
+		"service pistols must not engage the EC135 far above their vertical range"
+	)
+	main.in_helicopter = false
+	main.helicopter.global_transform = helicopter_transform
 
 
 func _expect(condition: bool, message: String):

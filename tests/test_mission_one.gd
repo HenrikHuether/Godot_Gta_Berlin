@@ -15,9 +15,12 @@ func _run():
 	get_root().add_child(main)
 	yield(self, "idle_frame")
 	main.car.set_simulation_enabled(false)
+	if is_instance_valid(main.helicopter) and main.helicopter.has_method("set_simulation_enabled"):
+		main.helicopter.set_simulation_enabled(false)
 
 	_expect(main.mission_one != null, "main should create the Mission 1 controller")
 	_test_expanded_map_and_site_cleanup(main)
+	_test_helicopter_shortcut_conflict(main)
 	_test_guard_route(main, main.mission_one)
 
 	var first_mission = main.mission_one
@@ -81,6 +84,54 @@ func _test_expanded_map_and_site_cleanup(main):
 		_expect(not berlin_map.has_node(removed_path), "%s should be removed because its facade overlaps the Bundestag" % removed_path)
 	_expect(berlin_map.has_node("Block_02/Building_02_01"), "non-overlapping neighbouring buildings should remain")
 	_expect(berlin_map.has_node("BrandenburgGate"), "Bundestag cleanup should preserve the Brandenburg Gate")
+	var mission_building = main.mission_one.get_node_or_null("BundestagMissionBuilding")
+	_expect(is_instance_valid(mission_building), "mission should build the Bundestag shell")
+	if is_instance_valid(mission_building):
+		var roof_terrace = mission_building.get_node_or_null("RoofTerrace")
+		_expect(roof_terrace is StaticBody, "Bundestag roof terrace should support helicopter landings")
+		var dome_hull = mission_building.get_node_or_null("DomeCollisionHull")
+		_expect(dome_hull is StaticBody, "the visible Reichstag dome should have a solid rotor collision hull")
+		if dome_hull is StaticBody:
+			var dome_collision = dome_hull.get_node_or_null("CollisionShape")
+			_expect(
+				dome_collision is CollisionShape and dome_collision.shape is ConvexPolygonShape,
+				"dome collision should use the same convex profile as the visible glass"
+			)
+			if dome_collision is CollisionShape and dome_collision.shape is ConvexPolygonShape:
+				var dome_points = dome_collision.shape.points
+				var highest_point = -100000.0
+				var widest_radius = 0.0
+				for dome_point in dome_points:
+					highest_point = max(highest_point, dome_point.y)
+					widest_radius = max(widest_radius, Vector2(dome_point.x, dome_point.z).length())
+				_expect(highest_point >= main.mission_one.BUILDING_HEIGHT + main.mission_one.DOME_HEIGHT, "dome hull should reach the full visible glass height")
+				_expect(widest_radius >= main.mission_one.DOME_RADIUS, "dome hull should cover the full visible base radius")
+
+
+func _test_helicopter_shortcut_conflict(main):
+	var restart_event = InputEventKey.new()
+	restart_event.pressed = true
+	restart_event.scancode = KEY_R
+	var previous_state = main.mission_one.state
+	main.mission_one.state = main.mission_one.MissionState.COMPLETE
+	main.in_helicopter = true
+	_expect(
+		not main.mission_one.handle_shortcut(restart_event),
+		"right-pedal R input must not restart the mission while flying the EC135"
+	)
+	_expect(
+		main.mission_one.get_context_prompt() == "",
+		"mission restart prompt must not hide the helicopter exit prompt while flying"
+	)
+	main.mission_one.state = main.mission_one.MissionState.ENTER_BUILDING
+	main.player.global_transform = Transform(Basis(), main.mission_one.BUILDING_CENTER + Vector3(0, 35, 0))
+	main.mission_one.update_mission(0.0)
+	_expect(
+		main.mission_one.state == main.mission_one.MissionState.ENTER_BUILDING,
+		"flying over the Bundestag must not skip the enter-building objective"
+	)
+	main.in_helicopter = false
+	main.mission_one.state = previous_state
 
 
 func _test_guard_route(main, mission):

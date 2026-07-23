@@ -1,0 +1,76 @@
+[gd_scene load_steps=9 format=2]
+
+[ext_resource path="res://scripts/helicopter_controller.gd" type="Script" id=1]
+
+[sub_resource type="BoxShape" id=1]
+extents = Vector3( 0.9, 0.72, 2.15 )
+
+[sub_resource type="BoxShape" id=2]
+extents = Vector3( 0.22, 0.22, 1.95 )
+
+[sub_resource type="BoxShape" id=3]
+extents = Vector3( 0.07, 0.07, 1.72 )
+
+[sub_resource type="CylinderShape" id=4]
+radius = 5.2
+height = 0.8
+
+[sub_resource type="CylinderShape" id=5]
+radius = 0.59
+height = 0.6
+
+[sub_resource type="PhysicsMaterial" id=6]
+friction = 0.55
+bounce = 0.03
+
+[sub_resource type="BoxShape" id=7]
+extents = Vector3( 0.72, 0.46, 0.85 )
+
+[node name="PlayerHelicopter" type="RigidBody"]
+mass = 2600.0
+physics_material_override = SubResource( 6 )
+gravity_scale = 1.0
+linear_damp = 0.02
+angular_damp = 0.03
+continuous_cd = true
+contacts_reported = 24
+contact_monitor = true
+script = ExtResource( 1 )
+
+[node name="FuselageCollision" type="CollisionShape" parent="."]
+transform = Transform( 1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.08, -0.05 )
+shape = SubResource( 1 )
+
+[node name="NoseCollision" type="CollisionShape" parent="."]
+transform = Transform( 1, 0, 0, 0, 1, 0, 0, 0, 1, 0, -0.05, -2.35 )
+shape = SubResource( 7 )
+
+[node name="TailBoomCollision" type="CollisionShape" parent="."]
+transform = Transform( 1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.47, 3.75 )
+shape = SubResource( 2 )
+
+[node name="LeftSkidCollision" type="CollisionShape" parent="."]
+transform = Transform( 1, 0, 0, 0, 1, 0, 0, 0, 1, -0.78, -1.43, 0.12 )
+shape = SubResource( 3 )
+
+[node name="RightSkidCollision" type="CollisionShape" parent="."]
+transform = Transform( 1, 0, 0, 0, 1, 0, 0, 0, 1, 0.78, -1.43, 0.12 )
+shape = SubResource( 3 )
+
+[node name="MainRotorArea" type="Area" parent="."]
+transform = Transform( 1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1.55, -0.15 )
+collision_layer = 0
+collision_mask = 1
+monitorable = false
+
+[node name="CollisionShape" type="CollisionShape" parent="MainRotorArea"]
+shape = SubResource( 4 )
+
+[node name="TailRotorArea" type="Area" parent="."]
+transform = Transform( 0, 1, 0, -1, 0, 0, 0, 0, 1, 0.11, 0.68, 5.85 )
+collision_layer = 0
+collision_mask = 1
+monitorable = false
+
+[node name="CollisionShape" type="CollisionShape" parent="TailRotorArea"]
+shape = SubResource( 5 )

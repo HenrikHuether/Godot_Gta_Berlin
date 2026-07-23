@@ -348,7 +348,7 @@ func build_bundestag():
 	add_static_box(building, "WestWallFront", Vector3(-69.0, 12.0, -26.0), Vector3(1.2, 24.0, 46.0), sandstone)
 	add_static_box(building, "WestWallRear", Vector3(-69.0, 12.0, 26.0), Vector3(1.2, 24.0, 46.0), sandstone)
 	add_static_box(building, "WestWallAboveServiceDoor", Vector3(-69.0, 14.25, 0), Vector3(1.2, 19.5, 6.0), sandstone)
-	add_visual_box(building, "RoofTerrace", Vector3(0, 24.2, 0), Vector3(140.0, 0.4, 100.0), roof_color)
+	add_static_box(building, "RoofTerrace", Vector3(0, 24.2, 0), Vector3(140.0, 0.4, 100.0), roof_color)
 
 	build_corner_towers(building, sandstone, sandstone_light)
 	build_facade_cornices(building, sandstone_shadow, sandstone_light)
@@ -519,6 +519,24 @@ func add_visual_triangular_prism(parent: Node, node_name: String, position: Vect
 
 func build_reichstag_dome(building: Spatial):
 	add_visual_cylinder(building, "DomeBase", Vector3(0, 24.25, 0), 20.6, 0.8, Color("505b60"))
+	# A single convex hull uses the same profile points as the visible glass.
+	# It is solid and gapless without the conspicuous invisible ledges produced
+	# by stacked cylinder approximations.
+	var dome_collision_body = StaticBody.new()
+	dome_collision_body.name = "DomeCollisionHull"
+	building.add_child(dome_collision_body)
+	var dome_collision = CollisionShape.new()
+	dome_collision.name = "CollisionShape"
+	var dome_shape = ConvexPolygonShape.new()
+	var dome_points = PoolVector3Array()
+	for collision_ring_index in range(DOME_RING_COUNT):
+		var collision_profile = dome_profile(collision_ring_index)
+		for collision_segment_index in range(DOME_RIB_COUNT):
+			var collision_angle = float(collision_segment_index) / float(DOME_RIB_COUNT) * PI * 2.0
+			dome_points.append(dome_point(collision_profile.x, collision_profile.y, collision_angle))
+	dome_shape.points = dome_points
+	dome_collision.shape = dome_shape
+	dome_collision_body.add_child(dome_collision)
 
 	var glass_surface = SurfaceTool.new()
 	glass_surface.begin(Mesh.PRIMITIVE_TRIANGLES)
@@ -879,7 +897,8 @@ func update_mission(delta: float):
 		if front_door_open or hidden_door_open:
 			set_state(MissionState.ENTER_BUILDING)
 	elif state == MissionState.ENTER_BUILDING:
-		if is_player_inside() or horizontal_distance(game.player.global_transform.origin, DELIVERY_POSITION) < 7.0:
+		var player_position = game.player.global_transform.origin
+		if not game.is_in_vehicle() and (is_player_inside() or player_position.distance_to(DELIVERY_POSITION) < 7.0):
 			set_state(MissionState.DELIVER_CASE)
 
 
@@ -889,16 +908,24 @@ func horizontal_distance(a: Vector3, b: Vector3) -> float:
 
 func is_player_inside() -> bool:
 	var position = game.player.global_transform.origin
-	return position.x > BUILDING_CENTER.x - 68.4 and position.x < BUILDING_CENTER.x + 68.4 and position.z > BUILDING_CENTER.z - 48.4 and position.z < BUILDING_CENTER.z + 48.4
+	return (
+		not game.is_in_vehicle()
+		and position.y > -0.5
+		and position.y < BUILDING_HEIGHT - 0.25
+		and position.x > BUILDING_CENTER.x - 68.4
+		and position.x < BUILDING_CENTER.x + 68.4
+		and position.z > BUILDING_CENTER.z - 48.4
+		and position.z < BUILDING_CENTER.z + 48.4
+	)
 
 
 func update_briefcase_visibility():
-	briefcase_model.visible = has_briefcase and not game.in_car and game.equipped_weapon == "" and not is_overlay_open()
+	briefcase_model.visible = has_briefcase and not game.is_in_vehicle() and game.equipped_weapon == "" and not is_overlay_open()
 	inventory_label.text = "▣ AKTENKOFFER: GESICHERT" if has_briefcase else "▢ AKTENKOFFER: ÜBERGEBEN"
 
 
 func apply_crate_push():
-	if not is_instance_valid(push_crate) or game.in_car or is_overlay_open():
+	if not is_instance_valid(push_crate) or game.is_in_vehicle() or is_overlay_open():
 		return
 	var player_position = game.player.global_transform.origin
 	var crate_position = push_crate.global_transform.origin
@@ -949,13 +976,13 @@ func open_front_door():
 func handle_interact() -> bool:
 	if is_overlay_open():
 		return true
-	if game.in_car:
+	if game.is_in_vehicle():
 		return false
 	var player_position = game.player.global_transform.origin
-	if state == MissionState.DELIVER_CASE and horizontal_distance(player_position, DELIVERY_POSITION) < 3.4:
+	if state == MissionState.DELIVER_CASE and player_position.distance_to(DELIVERY_POSITION) < 3.4:
 		complete_mission()
 		return true
-	if state == MissionState.GAIN_ACCESS and horizontal_distance(player_position, GUARD_POSITION) < 3.5:
+	if state == MissionState.GAIN_ACCESS and player_position.distance_to(GUARD_POSITION) < 3.5:
 		open_dialogue()
 		return true
 	return false
@@ -965,13 +992,15 @@ func get_context_prompt() -> String:
 	if not game or is_overlay_open():
 		return ""
 	var player_position = game.player.global_transform.origin
+	if game.in_helicopter:
+		return ""
 	if vehicle_failed():
 		return "[R] Fahrzeug ausgefallen – Mission neu starten"
-	if state == MissionState.DELIVER_CASE and not game.in_car and horizontal_distance(player_position, DELIVERY_POSITION) < 3.4:
+	if state == MissionState.DELIVER_CASE and not game.is_in_vehicle() and player_position.distance_to(DELIVERY_POSITION) < 3.4:
 		return "[E] Aktenkoffer übergeben"
-	if state == MissionState.GAIN_ACCESS and not game.in_car and horizontal_distance(player_position, GUARD_POSITION) < 3.5:
+	if state == MissionState.GAIN_ACCESS and not game.is_in_vehicle() and player_position.distance_to(GUARD_POSITION) < 3.5:
 		return "[E] Frei mit dem Wachmann sprechen"
-	if state == MissionState.GAIN_ACCESS and not game.in_car and is_instance_valid(push_crate) and horizontal_distance(player_position, push_crate.global_transform.origin) < 3.1 and not hidden_door_open:
+	if state == MissionState.GAIN_ACCESS and not game.is_in_vehicle() and is_instance_valid(push_crate) and player_position.distance_to(push_crate.global_transform.origin) < 3.1 and not hidden_door_open:
 		return "Kiste mit WASD verschieben – dahinter sind Schleifspuren"
 	if state == MissionState.GAIN_ACCESS and game.in_car and horizontal_distance(game.car.global_transform.origin, PARKING_POSITION) < 16.0:
 		return "[E] Aussteigen – Eingang untersuchen"
@@ -981,7 +1010,7 @@ func get_context_prompt() -> String:
 
 
 func open_dialogue():
-	if state != MissionState.GAIN_ACCESS or game.in_car or horizontal_distance(game.player.global_transform.origin, GUARD_POSITION) >= 3.5:
+	if state != MissionState.GAIN_ACCESS or game.is_in_vehicle() or game.player.global_transform.origin.distance_to(GUARD_POSITION) >= 3.5:
 		return
 	if dialogue_history == "":
 		dialogue_history = "[color=#8fc8f2]Wachmann:[/color] Halt. Ohne nachvollziehbaren Auftrag kommt hier niemand mit einem verschlossenen Koffer hinein.\n"
@@ -1057,6 +1086,10 @@ func show_notice(text: String, color: Color):
 
 
 func handle_shortcut(event) -> bool:
+	# R is the EC135's right pedal. Never treat it as a mission restart while
+	# the player is flying, even if the completion/failure panel is still open.
+	if game != null and game.in_helicopter:
+		return false
 	if (state == MissionState.COMPLETE or vehicle_failed()) and event is InputEventKey and event.pressed and not event.echo and event.scancode == KEY_R:
 		get_tree().reload_current_scene()
 		return true

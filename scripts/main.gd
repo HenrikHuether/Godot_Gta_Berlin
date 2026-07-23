@@ -4,7 +4,9 @@ const BERLIN_MAP_SCENE = preload("res://scenes/BerlinMap.tscn")
 const HUMAN_SCENE = preload("res://Assets/HumanV2.glb")
 const GOLF_SCENE = preload("res://Assets/Golf7ModelV3.glb")
 const HLF_SCENE = preload("res://Assets/Vehicles/Feuerwehr_HLF.glb")
+const EC135_SCENE = preload("res://Assets/Helicopters/EC135.glb")
 const PLAYER_VEHICLE_SCENE = preload("res://scenes/PlayerVehicle.tscn")
+const PLAYER_HELICOPTER_SCENE = preload("res://scenes/PlayerHelicopter.tscn")
 const MISSION_ONE_SCRIPT = preload("res://scripts/mission_one.gd")
 const MAP_EXPANSION_SCRIPT = preload("res://scripts/map_expansion.gd")
 const GOLF_VISUAL_SCALE = 0.65
@@ -22,6 +24,13 @@ const HLF_REAR_LIGHT_LEFT_POSITION = Vector3(-0.7865, 2.7684, -5.3798)
 const HLF_REAR_LIGHT_RIGHT_POSITION = Vector3(0.7836, 2.7684, -5.3798)
 const HLF_BLUE_EMISSION_ENERGY = 5.5
 const HLF_BLUE_LIGHT_ENERGY = 2.4
+const EC135_VISUAL_SCALE = 0.1724221
+const EC135_VISUAL_OFFSET = Vector3(0.0, 141.6558, 0.76277)
+const EC135_GROUND_HEIGHT = 1.50
+const EC135_SPAWN_POSITION = Vector3(0.0, 8.0, 26.0)
+const EC135_COCKPIT_POSITION = Vector3(0.38, -0.30, -1.90)
+const EC135_GLASS_ALPHA = 0.18
+const CAMERA_EYE_OFFSET = Vector3(0.0, 0.65, 0.0)
 const FIRE_SUPPRESSION_DURATION = 300.0
 const FIRE_ENGINE_ARRIVAL_DISTANCE = 6.0
 const EMERGENCY_LANE_OFFSET = 3.0
@@ -52,6 +61,10 @@ var player_collider: CollisionShape
 var camera: Camera
 var car: RigidBody
 var car_body: Spatial
+var helicopter: RigidBody
+var helicopter_body: Spatial
+var helicopter_cockpit_anchor: Spatial
+var helicopter_audio: AudioStreamPlayer3D
 var weapon_pivot: Spatial
 var pistol_model: Spatial
 var bazooka_model: Spatial
@@ -59,7 +72,9 @@ var rifle_model: Spatial
 var velocity = Vector3.ZERO
 var car_speed = 0.0
 var look_x = 0.0
+var helicopter_look_yaw = 0.0
 var in_car = false
+var in_helicopter = false
 var equipped_weapon = ""
 var bazooka_ready = true
 var player_health = 100
@@ -77,6 +92,8 @@ var map_expansion
 var car_fuel = 38.0
 var car_health = 100
 var car_damage_cooldown = 0.0
+var helicopter_health = 180
+var helicopter_damage_cooldown = 0.0
 var wanted_level = 0
 var weapon_cooldown = 0.0
 var reload_remaining = 0.0
@@ -111,10 +128,11 @@ func _ready():
 	map_expansion.setup(self)
 	configure_driving_surfaces()
 	build_player()
+	build_audio()
 	build_car()
+	build_helicopter()
 	build_npcs()
 	build_ui()
-	build_audio()
 	tag_destructible_buildings(get_node("BerlinMap"))
 	tag_destructible_buildings(map_expansion)
 	mission_one = MISSION_ONE_SCRIPT.new()
@@ -134,6 +152,7 @@ func build_audio():
 	sound_streams["fire"] = create_sound_sample("fire", 1.20, true)
 	sound_streams["fire_engine"] = create_sound_sample("fire_engine", 1.0, true)
 	sound_streams["martinshorn"] = create_sound_sample("martinshorn", 2.4, true)
+	sound_streams["helicopter"] = create_sound_sample("helicopter", 1.0, true)
 
 func create_sound_sample(kind: String, duration: float, looping := false) -> AudioStreamSample:
 	var mix_rate = 22050
@@ -169,6 +188,17 @@ func create_sound_sample(kind: String, duration: float, looping := false) -> Aud
 				+ sin(time * PI * 2.0 * 144.0 + 0.18) * 0.11
 				+ sin(time * PI * 2.0 * 240.0) * 0.045
 			) * engine_pulse
+		elif kind == "helicopter":
+			# Four-blade rotor pulse plus gearbox/turbine harmonics. Integer
+			# frequencies keep the one-second sample seamless when it loops.
+			var blade_pulse = 0.78 + sin(time * PI * 2.0 * 4.0) * 0.16
+			wave = (
+				sin(time * PI * 2.0 * 13.0) * 0.20
+				+ sin(time * PI * 2.0 * 26.0) * 0.38
+				+ sin(time * PI * 2.0 * 52.0 + 0.35) * 0.18
+				+ sin(time * PI * 2.0 * 156.0) * 0.08
+				+ noise * 0.025
+			) * blade_pulse
 		elif kind == "martinshorn":
 			# Four pneumatic bells recreate the paired pipes and characteristic beat of
 			# a classic German Martinshorn. Independent valve envelopes add the short
@@ -337,7 +367,7 @@ func build_player():
 	player_collider.shape = capsule
 	player.add_child(player_collider)
 	camera = Camera.new()
-	camera.translation = Vector3(0, 0.65, 0)
+	camera.translation = CAMERA_EYE_OFFSET
 	camera.far = 10000.0
 	camera.current = true
 	camera.doppler_tracking = Camera.DOPPLER_TRACKING_PHYSICS_STEP
@@ -438,6 +468,94 @@ func build_car():
 	car.set_driver_active(false)
 	car.connect("hard_impact", self, "_on_car_hard_impact")
 	call_deferred("place_car_on_ground")
+
+func build_helicopter():
+	helicopter = PLAYER_HELICOPTER_SCENE.instance()
+	helicopter.name = "EC135"
+	helicopter.translation = EC135_SPAWN_POSITION
+	helicopter_cockpit_anchor = Spatial.new()
+	helicopter_cockpit_anchor.name = "CockpitAnchor"
+	helicopter_cockpit_anchor.translation = EC135_COCKPIT_POSITION
+	helicopter.add_child(helicopter_cockpit_anchor)
+	register_damageable_vehicle(helicopter, helicopter_health, "player_helicopter")
+	helicopter_body = add_ec135_visual(helicopter)
+	add_child(helicopter)
+	helicopter.bind_visuals(helicopter_body.get_node_or_null("EC135Model"))
+	helicopter.set_driver_active(false)
+	helicopter.set_engine_enabled(false)
+	helicopter.connect("rotor_destroyed", self, "_on_helicopter_rotor_destroyed")
+	helicopter.connect("hard_impact", self, "_on_helicopter_hard_impact")
+	helicopter.connect("fatal_crash", self, "_on_helicopter_fatal_crash")
+	add_helicopter_audio(helicopter)
+	call_deferred("place_helicopter_on_ground")
+
+func add_ec135_visual(parent: Node) -> Spatial:
+	# The source scene uses a large Sketchfab offset and a 60.317 m imported
+	# rotor disk. This wrapper recentres it and calibrates the disk to 10.40 m.
+	var visual = Spatial.new()
+	visual.name = "EC135Visual"
+	visual.translation = EC135_VISUAL_OFFSET
+	visual.scale = Vector3.ONE * EC135_VISUAL_SCALE
+	parent.add_child(visual)
+	var model = EC135_SCENE.instance()
+	model.name = "EC135Model"
+	visual.add_child(model)
+	configure_ec135_materials(model)
+	# The player's camera occupies the left cockpit seat. Hiding both supplied
+	# pilots prevents duplicate occupants and removes their draw calls.
+	for pilot_name in ["ResucePilot_Final1", "ResucePilot_Final2"]:
+		var pilot = model.find_node(pilot_name, true, false)
+		if pilot:
+			pilot.visible = false
+	return visual
+
+func configure_ec135_materials(node: Node):
+	if node is MeshInstance and node.mesh:
+		for surface_index in range(node.mesh.get_surface_count()):
+			var source_material = node.get_surface_material(surface_index)
+			if source_material == null:
+				source_material = node.mesh.surface_get_material(surface_index)
+			if not (source_material is SpatialMaterial) or source_material.resource_name != "EC135_Glass_Mat":
+				continue
+			# The imported GLB uses a 74%-opaque alpha-prepass material. In GLES2
+			# that depth pass masks the world behind the canopy, especially from
+			# the cockpit. Preserve its textures/tint but use true two-sided glass
+			# that neither writes an opaque depth silhouette nor blocks the view.
+			var glass_material = source_material.duplicate(true) as SpatialMaterial
+			glass_material.resource_name = "EC135_Glass_Clear"
+			var glass_color = glass_material.albedo_color
+			glass_color.a = EC135_GLASS_ALPHA
+			glass_material.albedo_color = glass_color
+			glass_material.flags_transparent = true
+			glass_material.params_blend_mode = SpatialMaterial.BLEND_MODE_MIX
+			glass_material.params_cull_mode = SpatialMaterial.CULL_DISABLED
+			glass_material.params_depth_draw_mode = SpatialMaterial.DEPTH_DRAW_DISABLED
+			glass_material.metallic = 0.0
+			glass_material.roughness = 0.08
+			node.set_surface_material(surface_index, glass_material)
+	for child in node.get_children():
+		configure_ec135_materials(child)
+
+func add_helicopter_audio(vehicle: Node):
+	if not sound_streams.has("helicopter"):
+		sound_streams["helicopter"] = create_sound_sample("helicopter", 1.0, true)
+	helicopter_audio = AudioStreamPlayer3D.new()
+	helicopter_audio.name = "RotorAudio"
+	helicopter_audio.stream = sound_streams["helicopter"]
+	helicopter_audio.unit_db = -40.0
+	helicopter_audio.max_distance = 420.0
+	helicopter_audio.unit_size = 18.0
+	helicopter_audio.doppler_tracking = AudioStreamPlayer3D.DOPPLER_TRACKING_PHYSICS_STEP
+	helicopter_audio.out_of_range_mode = AudioStreamPlayer3D.OUT_OF_RANGE_PAUSE
+	vehicle.add_child(helicopter_audio)
+	helicopter_audio.play()
+
+func update_helicopter_audio():
+	if not is_instance_valid(helicopter_audio) or not is_instance_valid(helicopter):
+		return
+	var rotor_ratio = clamp(helicopter.get_rotor_rpm() / helicopter.NOMINAL_ROTOR_RPM, 0.0, 1.10)
+	helicopter_audio.unit_db = lerp(-40.0, -3.5, sqrt(rotor_ratio))
+	helicopter_audio.pitch_scale = 0.48 + rotor_ratio * 0.68
 
 func add_golf_visual(parent: Node, police_variant := false) -> Spatial:
 	# The supplied GLB points toward +Z. Rotate its visual wrapper so it follows
@@ -648,6 +766,25 @@ func place_car_on_ground():
 		target_transform.origin.y = hit.position.y + GOLF_GROUND_HEIGHT
 		teleport_vehicle(car, target_transform)
 
+func place_helicopter_on_ground():
+	if not is_instance_valid(helicopter):
+		return
+	var origin = helicopter.global_transform.origin
+	var excluded = [helicopter]
+	if is_instance_valid(player):
+		excluded.append(player)
+	if is_instance_valid(car):
+		excluded.append(car)
+	var hit = get_world().direct_space_state.intersect_ray(
+		Vector3(origin.x, 50.0, origin.z),
+		Vector3(origin.x, -10.0, origin.z),
+		excluded
+	)
+	if hit:
+		var target_transform = helicopter.global_transform
+		target_transform.origin.y = hit.position.y + EC135_GROUND_HEIGHT
+		teleport_vehicle(helicopter, target_transform)
+
 func teleport_vehicle(vehicle, target_transform: Transform, reset_motion := true):
 	if not is_instance_valid(vehicle):
 		return
@@ -763,7 +900,7 @@ func build_npcs():
 	call_deferred("place_npcs_on_map")
 
 func place_npcs_on_map():
-	var excluded = [player, car]
+	var excluded = [player, car, helicopter]
 	for npc in npcs:
 		excluded.append(npc)
 	for npc in npcs:
@@ -803,8 +940,8 @@ func build_ui():
 	layer.add_child(alert_label)
 	var help = Label.new()
 	help.anchor_top = 1.0
-	help.rect_position = Vector2(18, -52)
-	help.text = "WASD Bewegen/Fahren  •  E Auto  •  1 Pistole  •  2 Bazooka  •  3 Sturmgewehr  •  R Nachladen  •  B Feuermodus"
+	help.rect_position = Vector2(18, -72)
+	help.text = "WASD Bewegen/Fahren  •  E Ein-/Aussteigen  •  1/2/3 Waffen  •  R Nachladen\nEC135: WASD Cyclic  •  Leertaste/X Collective  •  Q/R Pedale"
 	layer.add_child(help)
 	damage_overlay = ColorRect.new()
 	damage_overlay.anchor_right = 1.0
@@ -839,9 +976,13 @@ func _unhandled_input(event):
 	if event is InputEventKey and event.echo:
 		return
 	if event is InputEventMouseMotion and Input.get_mouse_mode() == Input.MOUSE_MODE_CAPTURED:
-		player.rotate_y(deg2rad(-event.relative.x * 0.12))
 		look_x = clamp(look_x - event.relative.y * 0.12, -80, 80)
-		camera.rotation_degrees.x = look_x
+		if in_helicopter:
+			helicopter_look_yaw = clamp(helicopter_look_yaw - event.relative.x * 0.12, -115.0, 115.0)
+			camera.rotation_degrees = Vector3(look_x, helicopter_look_yaw, 0.0)
+		else:
+			player.rotate_y(deg2rad(-event.relative.x * 0.12))
+			camera.rotation_degrees.x = look_x
 	if event is InputEventMouseButton and event.pressed and Input.get_mouse_mode() != Input.MOUSE_MODE_CAPTURED:
 		Input.set_mouse_mode(Input.MOUSE_MODE_CAPTURED)
 		return
@@ -849,54 +990,78 @@ func _unhandled_input(event):
 		Input.set_mouse_mode(Input.MOUSE_MODE_VISIBLE)
 	if event.is_action_pressed("interact"):
 		if not mission_one or not mission_one.handle_interact():
-			toggle_car()
-	if event.is_action_pressed("equip") and not in_car:
+			toggle_nearest_vehicle()
+	if event.is_action_pressed("equip") and not is_in_vehicle():
 		set_weapon("" if equipped_weapon == "pistol" else "pistol")
-	if event.is_action_pressed("equip_bazooka") and not in_car:
+	if event.is_action_pressed("equip_bazooka") and not is_in_vehicle():
 		set_weapon("" if equipped_weapon == "bazooka" else "bazooka")
-	if event.is_action_pressed("equip_rifle") and not in_car:
+	if event.is_action_pressed("equip_rifle") and not is_in_vehicle():
 		set_weapon("" if equipped_weapon == "rifle" else "rifle")
-	if event.is_action_pressed("reload") and not in_car:
+	if event.is_action_pressed("reload") and not is_in_vehicle():
 		start_reload()
-	if event.is_action_pressed("toggle_fire_mode") and equipped_weapon == "rifle" and not in_car:
+	if event.is_action_pressed("toggle_fire_mode") and equipped_weapon == "rifle" and not is_in_vehicle():
 		rifle_fire_mode = "semi" if rifle_fire_mode == "auto" else "auto"
 		update_status()
-	if event.is_action_pressed("shoot") and equipped_weapon != "" and not in_car:
+	if event.is_action_pressed("shoot") and equipped_weapon != "" and not is_in_vehicle():
 		try_fire_weapon()
 
 func _physics_process(delta):
 	car_damage_cooldown = max(0.0, car_damage_cooldown - delta)
+	helicopter_damage_cooldown = max(0.0, helicopter_damage_cooldown - delta)
 	if player_dying:
 		update_player_death(delta)
 	var controls_locked = player_dying or (mission_one and mission_one.controls_locked())
 	update_weapon_system(delta, controls_locked)
 	update_damage_feedback(delta)
 	if not controls_locked:
-		if in_car:
+		if in_helicopter:
+			fly_helicopter(delta)
+		elif in_car:
 			drive(delta)
 		else:
 			walk(delta)
 	elif in_car and is_instance_valid(car):
 		car.set_driver_active(false)
-	if in_car:
+	elif in_helicopter and is_instance_valid(helicopter):
+		helicopter.set_driver_active(false)
+	if in_helicopter:
+		sync_player_to_helicopter()
+	elif in_car:
 		sync_player_to_car()
+	update_helicopter_audio()
 	update_emergency_vehicles(delta)
 	update_police_officers(delta)
 	update_vehicle_fires(delta)
 	update_firefighting_operations(delta)
 	if mission_one and not player_dying:
 		mission_one.update_mission(delta)
-	var near_car = player.global_transform.origin.distance_to(car.global_transform.origin) < 3.5
+	var car_distance = player.global_transform.origin.distance_to(car.global_transform.origin)
+	var helicopter_distance = player.global_transform.origin.distance_to(helicopter.global_transform.origin)
+	var near_car = car_distance < 3.5
+	var near_helicopter = helicopter_distance < 4.3
+	var car_available = can_enter_car(car_distance)
+	var helicopter_available = can_enter_helicopter(helicopter_distance)
 	var mission_prompt = mission_one.get_context_prompt() if mission_one else ""
 	if player_dying:
 		prompt.text = ""
 	elif mission_prompt != "":
 		prompt.text = mission_prompt
+	elif in_helicopter:
+		prompt.text = "[E] EC135 verlassen"
+	elif in_car:
+		prompt.text = "[E] Auto verlassen"
 	else:
-		if near_car and not in_car and car.has_meta("destroyed") and bool(car.get_meta("destroyed")):
+		# A nearer wreck must never hide or block another usable vehicle.
+		if helicopter_available and (not car_available or helicopter_distance <= car_distance):
+			prompt.text = "[E] EC135 besteigen"
+		elif car_available:
+			prompt.text = "[E] Auto einsteigen"
+		elif near_helicopter and (not near_car or helicopter_distance <= car_distance):
+			prompt.text = "EC135 ZERSTÖRT" if bool(helicopter.get_meta("destroyed")) else "EC135 NICHT FLUGFÄHIG"
+		elif near_car:
 			prompt.text = "FAHRZEUG ZERSTÖRT"
 		else:
-			prompt.text = "[E] Einsteigen" if near_car and not in_car else ("[E] Aussteigen" if in_car else "")
+			prompt.text = ""
 
 func input_vector() -> Vector2:
 	return Vector2(Input.get_action_strength("move_right") - Input.get_action_strength("move_left"), Input.get_action_strength("move_back") - Input.get_action_strength("move_forward")).normalized()
@@ -937,6 +1102,16 @@ func drive(delta):
 	car_speed = car.get_forward_speed()
 	update_status()
 
+func fly_helicopter(_delta):
+	if not is_instance_valid(helicopter):
+		return
+	var cyclic_pitch = Input.get_action_strength("move_forward") - Input.get_action_strength("move_back")
+	var cyclic_roll = Input.get_action_strength("move_right") - Input.get_action_strength("move_left")
+	var pedal = Input.get_action_strength("helicopter_yaw_right") - Input.get_action_strength("helicopter_yaw_left")
+	var collective_axis = Input.get_action_strength("helicopter_collective_up") - Input.get_action_strength("helicopter_collective_down")
+	helicopter.set_driver_input(cyclic_pitch, cyclic_roll, pedal, collective_axis)
+	update_status()
+
 func consume_car_fuel(throttle: float, delta: float):
 	if abs(throttle) > 0.05 and car_fuel > 0.0 and car_health > 0:
 		car_fuel = max(0.0, car_fuel - abs(throttle) * delta * 0.20)
@@ -958,8 +1133,40 @@ func sync_player_to_car():
 	var occupant_position = car.global_transform.origin + Vector3.UP * 1.2
 	player.global_transform = Transform(occupant_basis, occupant_position)
 
+func sync_player_to_helicopter():
+	if not is_instance_valid(helicopter) or not is_instance_valid(player):
+		return
+	var occupant_basis = helicopter.global_transform.basis.orthonormalized()
+	var occupant_position = helicopter.global_transform.xform(EC135_COCKPIT_POSITION)
+	player.global_transform = Transform(occupant_basis, occupant_position)
+
+func attach_camera_to_helicopter():
+	if not is_instance_valid(camera) or not is_instance_valid(helicopter_cockpit_anchor):
+		return
+	if camera.get_parent() != helicopter_cockpit_anchor:
+		var previous_parent = camera.get_parent()
+		if is_instance_valid(previous_parent):
+			previous_parent.remove_child(camera)
+		helicopter_cockpit_anchor.add_child(camera)
+	camera.translation = CAMERA_EYE_OFFSET
+	camera.current = true
+
+func attach_camera_to_player():
+	if not is_instance_valid(camera) or not is_instance_valid(player):
+		return
+	if camera.get_parent() != player:
+		var previous_parent = camera.get_parent()
+		if is_instance_valid(previous_parent):
+			previous_parent.remove_child(camera)
+		player.add_child(camera)
+	camera.translation = CAMERA_EYE_OFFSET
+	camera.current = true
+
 func _upright_car_basis() -> Basis:
-	var flat_forward = -car.global_transform.basis.z
+	return _upright_vehicle_basis(car)
+
+func _upright_vehicle_basis(vehicle: Spatial) -> Basis:
+	var flat_forward = -vehicle.global_transform.basis.z
 	flat_forward.y = 0.0
 	if flat_forward.length_squared() < 0.001:
 		flat_forward = Vector3(0, 0, -1)
@@ -971,6 +1178,81 @@ func _on_car_hard_impact(impact_speed: float):
 	if car_health > 0:
 		apply_car_impact_damage(impact_speed)
 
+func _on_helicopter_hard_impact(impact_speed: float):
+	if helicopter_health <= 0 or helicopter_damage_cooldown > 0.0:
+		return
+	if helicopter.has_method("is_rotor_failed") and helicopter.is_rotor_failed():
+		return
+	if impact_speed >= 22.0:
+		# A roughly 80 km/h impact is a catastrophic airframe crash, even when
+		# the rotor itself did not strike first.
+		damage_vehicle(helicopter, int(helicopter.get_meta("health")))
+		helicopter_damage_cooldown = 0.70
+		return
+	var damage = int(clamp((impact_speed - 4.5) * 5.0, 5.0, 55.0))
+	damage_vehicle(helicopter, damage)
+	helicopter_damage_cooldown = 0.70
+	if is_instance_valid(prompt):
+		prompt.text = "Harte Landung! EC135-Schaden: %d%%" % int(round(float(helicopter_health) / 1.8))
+
+func _on_helicopter_rotor_destroyed(reason := "contact"):
+	if not is_instance_valid(helicopter) or bool(helicopter.get_meta("destroyed")):
+		return
+	# A blade strike destroys lift, not all remaining fuselage HP. Otherwise an
+	# incidental follow-up hit would bypass the intended fall-and-impact path.
+	# Direct lethal damage has already reduced the metadata to zero.
+	if str(reason) == "damage":
+		helicopter_health = 0
+		helicopter.set_meta("health", 0)
+	if is_instance_valid(alert_label):
+		alert_label.text = "ROTOR ZERSTÖRT – AUFTRIEB VERLOREN"
+	update_status()
+
+func _on_helicopter_fatal_crash(_impact_speed := 0.0):
+	if is_instance_valid(helicopter):
+		destroy_vehicle(helicopter)
+
+func is_in_vehicle() -> bool:
+	return in_car or in_helicopter
+
+func get_active_player_vehicle():
+	if in_helicopter and is_instance_valid(helicopter):
+		return helicopter
+	if in_car and is_instance_valid(car):
+		return car
+	return null
+
+func can_enter_car(distance: float) -> bool:
+	return (
+		is_instance_valid(car)
+		and distance < 3.5
+		and not bool(car.get_meta("destroyed"))
+	)
+
+func can_enter_helicopter(distance: float) -> bool:
+	return (
+		is_instance_valid(helicopter)
+		and distance < 4.3
+		and not bool(helicopter.get_meta("destroyed"))
+		and not (helicopter.has_method("is_rotor_failed") and helicopter.is_rotor_failed())
+	)
+
+func toggle_nearest_vehicle():
+	if in_helicopter:
+		toggle_helicopter()
+		return
+	if in_car:
+		toggle_car()
+		return
+	var car_distance = player.global_transform.origin.distance_to(car.global_transform.origin)
+	var helicopter_distance = player.global_transform.origin.distance_to(helicopter.global_transform.origin)
+	var car_available = can_enter_car(car_distance)
+	var helicopter_available = can_enter_helicopter(helicopter_distance)
+	if helicopter_available and (not car_available or helicopter_distance <= car_distance):
+		toggle_helicopter()
+	elif car_available:
+		toggle_car()
+
 func toggle_car():
 	if in_car:
 		in_car = false
@@ -978,11 +1260,40 @@ func toggle_car():
 		player.translation = car.translation + _upright_car_basis().x * 2.2 + Vector3.UP
 		player_collider.disabled = false
 		car_body.visible = true
-	elif player.global_transform.origin.distance_to(car.global_transform.origin) < 3.5 and not bool(car.get_meta("destroyed")):
+	elif not in_helicopter and player.global_transform.origin.distance_to(car.global_transform.origin) < 3.5 and not bool(car.get_meta("destroyed")):
 		in_car = true
 		car.set_driver_active(true)
 		set_weapon("")
 		player_collider.disabled = true
+	update_status()
+
+func toggle_helicopter():
+	if in_helicopter:
+		in_helicopter = false
+		helicopter.set_driver_active(false)
+		helicopter.set_engine_enabled(false)
+		var exit_basis = _upright_vehicle_basis(helicopter)
+		var exit_position = helicopter.global_transform.origin + exit_basis.x * 2.55 + Vector3.UP * 0.25
+		player.global_transform = Transform(exit_basis, exit_position)
+		player_collider.disabled = false
+		attach_camera_to_player()
+		helicopter_look_yaw = 0.0
+		camera.rotation_degrees = Vector3(look_x, 0.0, 0.0)
+	elif (
+		not in_car
+		and player.global_transform.origin.distance_to(helicopter.global_transform.origin) < 4.3
+		and not bool(helicopter.get_meta("destroyed"))
+		and not (helicopter.has_method("is_rotor_failed") and helicopter.is_rotor_failed())
+	):
+		in_helicopter = true
+		helicopter.set_driver_active(true)
+		helicopter.set_engine_enabled(true)
+		attach_camera_to_helicopter()
+		set_weapon("")
+		player_collider.disabled = true
+		look_x = 0.0
+		helicopter_look_yaw = 0.0
+		camera.rotation_degrees = Vector3.ZERO
 	update_status()
 
 func set_weapon(weapon: String):
@@ -1006,7 +1317,7 @@ func update_weapon_system(delta: float, controls_locked: bool):
 			finish_reload()
 		else:
 			update_status()
-	if equipped_weapon == "rifle" and rifle_fire_mode == "auto" and not in_car and not controls_locked and Input.get_mouse_mode() == Input.MOUSE_MODE_CAPTURED and Input.is_action_pressed("shoot"):
+	if equipped_weapon == "rifle" and rifle_fire_mode == "auto" and not is_in_vehicle() and not controls_locked and Input.get_mouse_mode() == Input.MOUSE_MODE_CAPTURED and Input.is_action_pressed("shoot"):
 		try_fire_weapon()
 
 func try_fire_weapon():
@@ -1062,8 +1373,9 @@ func fire_hitscan(weapon: String):
 	var weapon_range = 140.0 if weapon == "pistol" else 240.0
 	var to = from + direction * weapon_range
 	var excluded = [player]
-	if in_car:
-		excluded.append(car)
+	var active_vehicle = get_active_player_vehicle()
+	if is_instance_valid(active_vehicle):
+		excluded.append(active_vehicle)
 	var hit = get_world().direct_space_state.intersect_ray(from, to, excluded)
 	var end = hit.position if hit else to
 	var model = pistol_model if weapon == "pistol" else rifle_model
@@ -1147,8 +1459,9 @@ func fire_bazooka():
 	play_sound_3d("rocket", from, -1.0)
 	var to = camera.global_transform.origin + -camera.global_transform.basis.z * 300.0
 	var rocket_excluded = [player]
-	if in_car:
-		rocket_excluded.append(car)
+	var active_vehicle = get_active_player_vehicle()
+	if is_instance_valid(active_vehicle):
+		rocket_excluded.append(active_vehicle)
 	var hit = get_world().direct_space_state.intersect_ray(camera.global_transform.origin, to, rocket_excluded)
 	var end = hit.position if hit else to
 	var target = hit.collider if hit else null
@@ -1225,8 +1538,16 @@ func damage_vehicle(vehicle, amount: int, create_blast := true):
 	vehicle.set_meta("health", health)
 	if vehicle == car:
 		car_health = health
+	elif vehicle == helicopter:
+		helicopter_health = health
 	if health <= 0:
-		destroy_vehicle(vehicle, create_blast)
+		if vehicle == helicopter and helicopter.has_method("trigger_rotor_failure"):
+			# Direct lethal damage destroys the aircraft immediately. Rotor contact
+			# uses its separate signal path and keeps the chassis dynamic until impact.
+			helicopter.trigger_rotor_failure("damage")
+			destroy_vehicle(vehicle, create_blast)
+		else:
+			destroy_vehicle(vehicle, create_blast)
 	else:
 		update_status()
 
@@ -1255,6 +1576,21 @@ func destroy_vehicle(vehicle, create_blast := true):
 			set_weapon("")
 			damage_player(35)
 		alert_label.text = "FAHRZEUG ZERSTÖRT"
+	elif vehicle == helicopter:
+		helicopter_health = 0
+		helicopter.freeze_as_wreck()
+		if is_instance_valid(helicopter_audio):
+			helicopter_audio.stop()
+		if in_helicopter:
+			in_helicopter = false
+			var helicopter_exit_basis = _upright_vehicle_basis(helicopter)
+			var helicopter_exit_position = helicopter.global_transform.origin + helicopter_exit_basis.x * 3.0 + Vector3.UP * 0.8
+			player.global_transform = Transform(helicopter_exit_basis, helicopter_exit_position)
+			player_collider.disabled = false
+			attach_camera_to_player()
+			set_weapon("")
+			damage_player(100)
+		alert_label.text = "EC135 ZERSTÖRT"
 	char_vehicle_visuals(vehicle)
 	create_vehicle_fire(vehicle)
 	update_status()
@@ -1331,6 +1667,8 @@ func update_vehicle_fires(delta: float):
 
 func apply_explosion_damage(position: Vector3, radius: float):
 	var vehicles = [car]
+	if is_instance_valid(helicopter):
+		vehicles.append(helicopter)
 	for response in emergency_vehicles:
 		if is_instance_valid(response.node) and not vehicles.has(response.node):
 			vehicles.append(response.node)
@@ -1350,7 +1688,7 @@ func apply_explosion_damage(position: Vector3, radius: float):
 				var blast_damage = int(180.0 * (1.0 - target_distance / radius))
 				if blast_damage > 0:
 					apply_weapon_damage(target, blast_damage)
-	if not in_car:
+	if not is_in_vehicle():
 		var player_distance = player.global_transform.origin.distance_to(position)
 		if player_distance < radius:
 			var player_blast_damage = int(90.0 * (1.0 - player_distance / radius))
@@ -1634,16 +1972,18 @@ func update_police_officers(delta):
 		if not is_instance_valid(officer):
 			police_officers.erase(officer)
 			continue
-		var target_body = car if in_car else player
+		var active_vehicle = get_active_player_vehicle()
+		var target_body = active_vehicle if is_instance_valid(active_vehicle) else player
 		var target_position = target_body.global_transform.origin
-		var offset = target_position - officer.global_transform.origin
-		offset.y = 0
-		if offset.length() > 7.0:
-			officer.move_and_slide(offset.normalized() * OFFICER_SPEED + Vector3.DOWN * 4.0, Vector3.UP)
-		if offset.length() > 0.2:
+		var target_delta = target_position - officer.global_transform.origin
+		var horizontal_offset = target_delta
+		horizontal_offset.y = 0
+		if horizontal_offset.length() > 7.0:
+			officer.move_and_slide(horizontal_offset.normalized() * OFFICER_SPEED + Vector3.DOWN * 4.0, Vector3.UP)
+		if horizontal_offset.length() > 0.2:
 			officer.look_at(Vector3(target_position.x, officer.global_transform.origin.y, target_position.z), Vector3.UP)
 		var cooldown = float(officer.get_meta("shoot_cooldown")) - delta
-		if cooldown <= 0.0 and offset.length() < 38.0:
+		if cooldown <= 0.0 and target_delta.length() < 38.0 and abs(target_delta.y) < 14.0:
 			police_shoot(officer)
 			cooldown = 1.15
 		officer.set_meta("shoot_cooldown", cooldown)
@@ -1651,7 +1991,8 @@ func update_police_officers(delta):
 func police_shoot(officer):
 	if not is_instance_valid(officer) or player_dying:
 		return
-	var target_body = car if in_car else player
+	var active_vehicle = get_active_player_vehicle()
+	var target_body = active_vehicle if is_instance_valid(active_vehicle) else player
 	var target_shape = player_collider if target_body == player else target_body.get_node_or_null("CollisionShape")
 	var aim_point = target_shape.global_transform.origin if target_shape else target_body.global_transform.origin
 	# The player's origin is the capsule centre. Aim slightly below it, squarely
@@ -1663,6 +2004,9 @@ func police_shoot(officer):
 	var service_pistol = officer.get_node_or_null("ServicePistol")
 	var muzzle_flash = service_pistol.get_node_or_null("MuzzleFlash") if service_pistol else null
 	var from = muzzle_flash.global_transform.origin if muzzle_flash else officer.global_transform.origin + Vector3.UP * 1.35
+	var target_delta = aim_point - from
+	if target_delta.length() >= 40.0 or abs(target_delta.y) >= 14.0:
+		return
 	var shot_number = int(officer.get_meta("shots_fired")) + 1
 	officer.set_meta("shots_fired", shot_number)
 	# A deterministic occasional miss keeps the encounter readable without bypassing physical cover.
@@ -1683,8 +2027,8 @@ func police_shoot(officer):
 		show_impact(hit.position, hit.normal)
 	if not hit or hit.collider != target_body:
 		return
-	if in_car:
-		damage_vehicle(car, 6)
+	if target_body != player:
+		damage_vehicle(target_body, 6)
 		damage_player(7)
 	else:
 		damage_player(12)
@@ -1708,15 +2052,26 @@ func start_player_death():
 	car_speed = 0.0
 	if is_instance_valid(car):
 		car.set_driver_active(false)
+	if is_instance_valid(helicopter):
+		helicopter.set_driver_active(false)
+		helicopter.set_engine_enabled(false)
 	if mission_one and mission_one.is_overlay_open():
 		mission_one.close_dialogue()
-	if in_car:
+	if in_helicopter:
+		in_helicopter = false
+		var helicopter_exit_basis = _upright_vehicle_basis(helicopter)
+		var helicopter_exit_position = helicopter.global_transform.origin + helicopter_exit_basis.x * 2.8 + Vector3.UP * 0.8
+		player.global_transform = Transform(helicopter_exit_basis, helicopter_exit_position)
+	elif in_car:
 		in_car = false
 		var exit_basis = _upright_car_basis()
 		var exit_position = car.global_transform.origin + exit_basis.x * 2.6 + Vector3.UP * 0.8
 		player.global_transform = Transform(exit_basis, exit_position)
 	else:
 		player.rotation_degrees = Vector3(0, player.rotation_degrees.y, 0)
+	# Death can be entered from scripted or stale states as well as the normal
+	# vehicle branches, so always restore the first-person camera ownership.
+	attach_camera_to_player()
 	if is_instance_valid(player_collider) and not player_collider.disabled:
 		player_collider.set_deferred("disabled", true)
 	set_weapon("")
@@ -1790,6 +2145,9 @@ func set_death_fade_alpha(alpha: float):
 
 func commit_player_respawn():
 	# Reset behind the opaque overlay so the teleport is never visible.
+	in_car = false
+	in_helicopter = false
+	attach_camera_to_player()
 	player.global_transform = Transform(Basis(), Vector3(3, 4, 8))
 	player.rotation_degrees = Vector3.ZERO
 	camera.rotation_degrees = Vector3.ZERO
@@ -2052,9 +2410,25 @@ func update_status():
 			stars += "★"
 		wanted_text = " | FAHNDUNG %s" % stars
 	var vehicle_text = ""
-	if in_car:
+	var mode_text = "ZU FUSS"
+	if in_helicopter and is_instance_valid(helicopter):
+		mode_text = "IM EC135"
+		var rotor_rpm = int(round(helicopter.get_rotor_rpm()))
+		var collective_percent = int(round(helicopter.get_collective() * 100.0))
+		var helicopter_speed = int(round(helicopter.get_speed_kph()))
+		var helicopter_health_percent = int(round(float(helicopter_health) / 1.8))
+		var rotor_state = " · ROTOR DEFEKT" if helicopter.is_rotor_failed() else ""
+		vehicle_text = " | %d km/h · %d RPM · COL %d%% | EC135 %d%%%s" % [
+			helicopter_speed,
+			rotor_rpm,
+			collective_percent,
+			helicopter_health_percent,
+			rotor_state
+		]
+	elif in_car:
+		mode_text = "IM AUTO"
 		var speed_kph = int(round(car.get_speed_kph())) if is_instance_valid(car) else int(round(abs(car_speed) * 3.6))
 		var gear = car.get_current_gear() if is_instance_valid(car) else 0
 		var gear_text = "R" if gear < 0 else str(gear)
 		vehicle_text = " | %d km/h · GANG %s | BENZIN %d%% | AUTO %d%%" % [speed_kph, gear_text, int(ceil(car_fuel)), car_health]
-	status.text = ("IM AUTO" if in_car else "ZU FUSS") + " | HP %d%s%s | Waffe: %s%s" % [player_health, vehicle_text, wanted_text, weapon_name, ammo_text]
+	status.text = mode_text + " | HP %d%s%s | Waffe: %s%s" % [player_health, vehicle_text, wanted_text, weapon_name, ammo_text]

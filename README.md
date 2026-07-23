@@ -19,6 +19,13 @@ machen die Treffer nachvollziehbar. Prozedurale 3D-Sounds begleiten Schüsse,
 Raketenstarts, Explosionen, brennende Fahrzeuge sowie Motor und ein mehrstimmiges
 pneumatisches Martinshorn des HLF.
 
+Ein EC135 steht auf der zentralen Straße als zweites Spielerfahrzeug bereit. Sein
+RigidBody-Flugmodell simuliert Rotorhochlauf, Collective und Cyclic, Pedale,
+Translationsauftrieb, Bodeneffekt, Vortex-Ring-State, geschwindigkeitsabhängigen Auftrieb,
+anisotropen Luftwiderstand und eine schwache Stabilisierung. Haupt- und Heckrotor besitzen
+eigene überstrichene Kollisionsscheiben: Ein Rotortreffer bricht die Blätter ab, nimmt
+sofort den Auftrieb und lässt den Hubschrauber bis zum explosiven Aufschlag weiterfallen.
+
 Mission 1 ist als vollständiger Vertical Slice spielbar: Mit einem Aktenkoffer fährt der
 Spieler ins Regierungsviertel, verschafft sich Zugang zum Bundestag und übergibt die
 Sendung am Empfang. Das dafür erzeugte Bundestag-Areal besitzt den realen
@@ -38,7 +45,10 @@ Alternativ `project.godot` im Godot-Editor öffnen und **F6/F5** drücken.
 - **WASD** – laufen bzw. fahren
 - **Maus** – umsehen
 - **Leertaste** – zu Fuß springen, im Auto die Handbremse betätigen
-- **E** – nahe am goldgelben Golf ein-/aussteigen
+- **E** – nahe am Golf oder EC135 ein-/aussteigen
+- **EC135: WASD** – Cyclic für Nicken und Rollen
+- **EC135: Leertaste / X** – Collective erhöhen / senken
+- **EC135: Q / R** – linkes / rechtes Pedal
 - **1** – Pistole aus-/einrüsten
 - **2** – Raketenwerfer aus-/einrüsten
 - **3** – Sturmgewehr aus-/einrüsten
@@ -72,6 +82,7 @@ godot3 --no-window --audio-driver Dummy --path . --script tests/test_persuasion_
 godot3 --no-window --audio-driver Dummy --path . --script tests/test_mission_one.gd
 godot3 --no-window --audio-driver Dummy --path . --script tests/test_combat_systems.gd
 godot3 --no-window --audio-driver Dummy --path . --script tests/test_vehicle_controller.gd
+godot3 --no-window --audio-driver Dummy --path . --script tests/test_helicopter_controller.gd
 godot3 --no-window --audio-driver Dummy --path . --script tests/benchmark_vehicle.gd
 ```
 
@@ -82,8 +93,10 @@ Magazine, Nachladen, Spielerschaden, Torso-Zielpunkt, Sound, Fahrzeugzerstörung
 HLF samt Bodenlage, Blaulicht, Audioausstattung und fünfminütigem Schlaucheinsatz. Der
 Missionstest kontrolliert zusätzlich Kartengröße und die freie Reichstag-Baufläche. Der
 Fahrzeugtest prüft Federkräfte, Reibungskreis, vier belastete Räder, Geradeausfahrt,
-Bremsen und Lenkung. Der separate Kalibrierlauf hält Beschleunigung und Bremsweg in einem
-plausiblen Straßenauto-Fenster.
+Bremsen und Lenkung. Der Hubschraubertest prüft Schub, Luftwiderstand, Bodeneffekt,
+Rotorhochlauf, Flugsteuerung sowie die Zustandsfolge Rotorbruch, Fall und Aufschlag.
+Der separate Kalibrierlauf hält Beschleunigung und Bremsweg in einem plausiblen
+Straßenauto-Fenster.
 
 ## Fahrzeug und Fahndung
 
@@ -97,6 +110,24 @@ plausiblen Straßenauto-Fenster.
 - Bei einem Fahrzeugausfall kann die Mission mit **R** neu begonnen werden.
 - Straftaten erhöhen die sichtbare Fahndungsstufe. Gebäudeschäden lösen neben dem
   Feuerwehreinsatz auch einen Polizeieinsatz aus.
+
+## Hubschrauber
+
+- Der EC135 startet mit abgeschaltetem Triebwerk. Beim Einsteigen läuft der Rotor
+  realistisch hoch; sichtbare Drehzahl, Collective-Stellung und Geschwindigkeit erscheinen
+  im HUD.
+- Collective bleibt wie ein echter Hebel in seiner Position. Für den Schwebeflug ist
+  ungefähr die mittlere bis obere Stellung nötig; Vorwärtsfahrt liefert zusätzlichen
+  Translationsauftrieb.
+- Harte Landungen und Waffentreffer beschädigen den Rumpf; bei 0 HP oder einem
+  katastrophalen Hochgeschwindigkeitsaufprall explodiert die EC135. Ein Rotorkontakt
+  bleibt davon getrennt: Er nimmt den Auftrieb, lässt den Rumpf weiterfallen und
+  löst die Explosion erst beim Aufschlag aus.
+- Haupt- und Heckrotor verwenden getrennte, lückenlose Kollisionsscheiben. Kontakt mit
+  Boden, Gebäuden oder Fahrzeugen zerstört die Blätter sofort und erzeugt sichtbare
+  Rotortrümmer.
+- Das EC135-Modell von GRIP420 wird unter CC BY 4.0 verwendet; die vollständige
+  Quellenangabe steht in `Assets/Helicopters/EC135_ATTRIBUTION.txt`.
 
 ## Einsatzsysteme
 
