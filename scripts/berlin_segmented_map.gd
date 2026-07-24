@@ -5,7 +5,7 @@ class_name BerlinSegmentedMap
 # Street's source origin is used as the playable world origin.
 const SOURCE_ANCHOR := Vector3(5809.403809, 0.0, 4220.549805)
 const NETWORK_FILE := "res://Assets/Maps/berlin_network.json"
-const WALK_SURFACE_ELEVATION := 0.055
+const WALK_SURFACE_ELEVATION := 0.0
 const GROUND_COLLISION_DEPTH := 4.0
 const FACADE_SHADER = preload("res://shaders/berlin_building_facade.shader")
 const FACADE_TEXTURES := [

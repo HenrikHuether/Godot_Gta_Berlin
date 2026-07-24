@@ -5,7 +5,7 @@ const DEFAULT_NETWORK_PATH := "res://Assets/Maps/berlin_network.json"
 const ROAD_ASPHALT_TEXTURE_PATH := "res://Assets/Textures/berlin_asphalt.png"
 
 const ROAD_WIDTH := 14.0
-const ROAD_ELEVATION := 0.06
+const ROAD_ELEVATION := 0.12
 const ROAD_COLLISION_LAYER := 2
 const ROAD_COLLISION_MASK := 0
 const ROAD_SURFACE_GRIP := 1.02
@@ -15,7 +15,7 @@ const CURB_HEIGHT := 0.14
 const CURB_FACE_OFFSET := 0.008
 const SIDEWALK_JOINT_TRIM := 0.35
 const INTERSECTION_SIDEWALK_SETBACK := 10.5
-const MARKING_ELEVATION := 0.018
+const MARKING_ELEVATION := 0.125
 const MARKING_WIDTH := 0.16
 const MARKING_DASH_LENGTH := 3.0
 const MARKING_DASH_GAP := 6.0
